@@ -1,7 +1,37 @@
 #!/usr/bin/env bash
-# Fake `docker` for the PowerShell wrapper tests (tests/Test-Devtools.ps1).
-# Records the arguments it was given, one per line, in $DOCKER_ARGS_FILE and exits
-# with $DOCKER_FORCE_EXIT (default 0), so the wrappers can be tested without a daemon.
+# Fake `docker` for the PowerShell tests (tests/Test-Devtools.ps1, tests/Test-Setup.ps1).
+# Records its arguments and exits the way the test asks, so no Docker daemon is needed.
+#
+#   DOCKER_ARGS_FILE   the last call's arguments, one per line      (default /tmp/docker_args.txt)
+#   DOCKER_LOG_FILE    when set, every call is appended here as one line
+#   DOCKER_FORCE_EXIT  exit code of `docker run ...` and of any call not listed below (default 0)
+#   DOCKER_FAIL_ON     a word: a call that has it as an argument exits 1
+#   DOCKER_FAKE_OUTPUT when set, `docker run ...` prints one line
+#   DOCKER_SERVER      what `docker version --format ...` prints          (default linux/99.0.0-fake)
+#   DOCKER_VERSION_EXIT, DOCKER_COMPOSE_EXIT, DOCKER_BUILD_EXIT, DOCKER_IMAGE_EXIT
+#                      exit codes of `version`, `compose version`, `build` and `compose build`,
+#                      and `image ...`
 : "${DOCKER_ARGS_FILE:=/tmp/docker_args.txt}"
 printf '%s\n' "$@" > "$DOCKER_ARGS_FILE"
+if [ -n "${DOCKER_LOG_FILE:-}" ]; then echo "$*" >> "$DOCKER_LOG_FILE"; fi
+
+if [ -n "${DOCKER_FAIL_ON:-}" ]; then
+  for a in "$@"; do
+    if [ "$a" = "$DOCKER_FAIL_ON" ]; then exit 1; fi
+  done
+fi
+
+case "${1:-}" in
+  version)
+    echo "${DOCKER_SERVER:-linux/99.0.0-fake}"
+    exit "${DOCKER_VERSION_EXIT:-0}" ;;
+  compose)
+    case "${2:-}" in
+      version) echo "Docker Compose version v99-fake"; exit "${DOCKER_COMPOSE_EXIT:-0}" ;;
+      build)   exit "${DOCKER_BUILD_EXIT:-0}" ;;
+    esac ;;
+  build) exit "${DOCKER_BUILD_EXIT:-0}" ;;
+  image) exit "${DOCKER_IMAGE_EXIT:-0}" ;;
+  run)   if [ -n "${DOCKER_FAKE_OUTPUT:-}" ]; then echo "fake docker run ok"; fi ;;
+esac
 exit "${DOCKER_FORCE_EXIT:-0}"

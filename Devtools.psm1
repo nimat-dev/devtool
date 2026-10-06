@@ -1,10 +1,10 @@
 <#
-    Devtools.psm1 — run the toolbox CLIs transparently from PowerShell.
+    Devtools.psm1 - run the toolbox CLIs transparently from PowerShell.
 
     After importing, `az`, `kubectl`, `terraform`, `flux`, `helm`, `kustomize`
     and `azd` each run inside the devtools container against a persistent creds
     volume, with your current directory mounted at /work. Because these are
-    PowerShell functions, they shadow any same-named host executable — so on a
+    PowerShell functions, they shadow any same-named host executable - so on a
     machine with no local az/kubectl/etc., they just become the default.
 
     Install (one line in your $PROFILE):
@@ -14,7 +14,7 @@
         if (!(Test-Path $PROFILE)) { New-Item -ItemType File -Path $PROFILE -Force }
         notepad $PROFILE      # add the Import-Module line above, save, reopen PS
 
-    First run (device-code login — there's no browser inside the container):
+    First run (device-code login - there's no browser inside the container):
         az login --use-device-code
 
     Optional overrides (set before Import-Module, e.g. in $PROFILE):
@@ -106,14 +106,14 @@ function Invoke-Docker {
         $DockerArgs = @($DockerArgs | ForEach-Object { ConvertTo-LegacyNativeArg $_ })
     }
 
-    # $LASTEXITCODE is set automatically and propagates to the caller — do NOT
+    # $LASTEXITCODE is set automatically and propagates to the caller - do NOT
     # call `exit`, that would kill the user's interactive session.
     & $docker @DockerArgs
 }
 
 # Core runner (the "dev-run" helper). Builds a one-shot `docker run` and execs it.
 # NOTE: intentionally NOT an advanced function, and tool args arrive as an explicit
-# array value — so tool flags like `-out` are passed through as data, never parsed
+# array value - so tool flags like `-out` are passed through as data, never parsed
 # as parameters of this function.
 function Invoke-DevTool {
     param(

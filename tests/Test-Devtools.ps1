@@ -9,7 +9,7 @@
 
     On Linux and macOS the fake is the shell script tests/fakebin/docker. On Windows it is a
     docker.exe compiled on the fly from tests/fakebin/docker.cs, because the module looks for
-    a real docker.exe.
+    a real docker.exe (see tests/FakeDocker.ps1).
 #>
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -17,25 +17,11 @@ Set-StrictMode -Version Latest
 $root     = Split-Path -Parent $PSScriptRoot
 $module   = Join-Path $root 'Devtools.psm1'
 $tmp      = [IO.Path]::GetTempPath()
-$isWin    = ($env:OS -eq 'Windows_NT')
 $argsFile = Join-Path $tmp "devtools-docker-args-$PID.txt"
 $workDir  = Join-Path $tmp "devtools-test-work-$PID"
 
-if ($isWin) {
-    $fakebin = Join-Path $tmp "devtools-fakebin-$PID"
-    New-Item -ItemType Directory -Force -Path $fakebin | Out-Null
-    $cs  = Join-Path (Join-Path $PSScriptRoot 'fakebin') 'docker.cs'
-    $exe = Join-Path $fakebin 'docker.exe'
-    # Add-Type -OutputAssembly only exists in Windows PowerShell, so compile with that
-    # whichever PowerShell is running the tests.
-    $compile = "Add-Type -TypeDefinition (Get-Content -Raw -LiteralPath '$cs') -OutputAssembly '$exe' -OutputType ConsoleApplication"
-    & powershell.exe -NoProfile -ExecutionPolicy Bypass -Command $compile
-    if (-not (Test-Path -LiteralPath $exe)) { throw "could not build the fake docker.exe from $cs" }
-} else {
-    $fakebin = Join-Path $PSScriptRoot 'fakebin'
-    & chmod +x (Join-Path $fakebin 'docker')
-}
-$env:PATH = $fakebin + [IO.Path]::PathSeparator + $env:PATH   # fake docker wins over a real one
+. (Join-Path $PSScriptRoot 'FakeDocker.ps1')
+$fakebin = Install-FakeDocker
 $env:DOCKER_ARGS_FILE = $argsFile
 New-Item -ItemType Directory -Force -Path $workDir | Out-Null
 
@@ -250,7 +236,7 @@ Remove-Item Env:\DOCKER_FORCE_EXIT
 # ---- done ---------------------------------------------------------------------------------------
 Set-Location $root
 Remove-Item $argsFile, $workDir -Recurse -Force -ErrorAction SilentlyContinue
-if ($isWin) { Remove-Item $fakebin -Recurse -Force -ErrorAction SilentlyContinue }
+Remove-FakeDocker $fakebin
 Write-Host ''
 # Always finish with an explicit exit code. The checks above leave $LASTEXITCODE at 3 (they
 # test exit-code propagation), and CI runners end a pwsh step with `exit $LASTEXITCODE`,

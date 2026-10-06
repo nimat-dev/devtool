@@ -19,6 +19,48 @@ Flux CLI, AWS CLI v2, GitHub CLI (gh), kubectx/kubens, plus jq, yq, git, ssh, ma
 - PowerShell (Windows PowerShell 5.1 or PowerShell 7+).
 - No admin rights or other installs required.
 
+## Quick start: one command
+
+Open PowerShell in this folder and run:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\setup.ps1
+```
+
+`setup.ps1` runs every command from the steps below, in order, and then checks the tools:
+
+1. checks that Docker Desktop is running with Linux containers
+2. creates `.env` from `.env.example` (an existing `.env` is kept)
+3. builds the image (`docker compose build`)
+4. adds the `Import-Module` line to your PowerShell profile (a line left over from a moved
+   folder is updated, and a `.bak` copy of the profile is saved first)
+5. loads the wrappers
+6. runs `az`, `kubectl`, `terraform`, `helm`, `flux`, `kustomize`, `azd`, `gh`, `kubectx` and
+   `kubens` once each, in the container, to prove they work
+
+Then it offers the Azure device-code login and the Docker Desktop Kubernetes import. It is safe
+to run again whenever you like: every step checks before it changes anything.
+
+| Option | What it does |
+| --- | --- |
+| `-SkipBuild` | the image is already built |
+| `-SkipProfile` | leave your PowerShell profile alone |
+| `-SkipVerify` | skip the tool checks |
+| `-Login` | run `az login --use-device-code` at the end without asking |
+| `-ImportKube` | import Docker Desktop's Kubernetes context at the end without asking |
+| `-NoPrompt` | never ask a question (for automation) |
+| `-ProfilePath <file>` | edit this profile instead of your all-hosts profile |
+
+Exit code: `0` all good, `1` setup could not finish, `2` setup finished but a tool check failed.
+
+That command runs the script in its own PowerShell process, so open a **new** PowerShell window
+afterwards: your profile loads the tools there. (If you start it from your own prompt as
+`.\setup.ps1`, after `Set-ExecutionPolicy -Scope Process Bypass`, the tools are loaded in that
+window too.) If Group Policy blocks scripts altogether, use the manual steps below, or
+`docker compose run --rm dev` for a shell inside the toolbox.
+
+The manual steps, one at a time:
+
 ## 1. Build the image
 
 ```powershell
@@ -195,14 +237,20 @@ git push -u origin main              # use a PAT as the password when prompted
 Every push runs `.github/workflows/ci.yml` on GitHub's runners (the badge at the top shows the
 latest result). It runs three jobs:
 
-- **Lint and PowerShell wrapper tests** (Linux): hadolint on the Dockerfile, shellcheck on every
-  shell script, `docker compose config`, and `tests/Test-Devtools.ps1`. That script runs the real
-  `Devtools.psm1` against a fake `docker` and checks the exact `docker run` line each wrapper
-  produces (mounts, working directory, `-out` / `-o` pass-through, exit codes, env overrides).
-- **PowerShell wrappers on Windows**: the same wrapper tests in Windows PowerShell 5.1 and in
-  PowerShell 7 on a Windows runner, with a fake `docker.exe`. Windows runners cannot run Linux
-  containers, so this covers the PowerShell side only: 5.1 syntax, parameter binding, native
-  argument passing and Windows paths.
+- **Lint and PowerShell tests** (Linux): hadolint on the Dockerfile, shellcheck on every shell
+  script, `docker compose config`, and two PowerShell test scripts that run against a fake
+  `docker`:
+  - `tests/Test-Devtools.ps1` runs the real `Devtools.psm1` and checks the exact `docker run`
+    line each wrapper produces (mounts, working directory, `-out` / `-o` pass-through, exit
+    codes, env overrides).
+  - `tests/Test-Setup.ps1` runs `setup.ps1` in a scratch copy of the project, once per situation
+    it has to handle: first run, second run, project folder moved, Docker not running, Windows
+    containers, docker missing, wrong folder, build failure, no `docker compose`, a broken tool,
+    and each option. It checks the exit code, the messages, the docker calls and the profile file.
+- **PowerShell on Windows**: both test scripts in Windows PowerShell 5.1 and in PowerShell 7 on a
+  Windows runner, with a fake `docker.exe`. Windows runners cannot run Linux containers, so this
+  covers the PowerShell side only: 5.1 syntax, parameter binding, native argument passing and
+  Windows paths.
 - **Build the image and test it** (Linux): a real `docker build`, then
   - `tests/smoke.sh` runs inside the image: every tool starts and reports the version pinned in
     the Dockerfile, the entrypoint extends `NO_PROXY`, the Terraform plugin cache is set up.
@@ -211,12 +259,16 @@ latest result). It runs three jobs:
     that only the `docker-desktop` context is imported (a second context's secret never reaches
     the volume), that kubectx and kubens work against it, that a re-import is idempotent, and that
     a dead corporate proxy cannot swallow the host traffic.
+  - `setup.ps1` runs for real against the Docker engine of the runner (build, profile, every tool
+    in its own container), and then once more to prove a second run changes nothing.
 
-Run the wrapper tests on your own machine (no Docker needed):
+Run the PowerShell tests on your own machine (no Docker needed):
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File tests\Test-Devtools.ps1   # Windows PowerShell 5.1
+powershell -NoProfile -ExecutionPolicy Bypass -File tests\Test-Setup.ps1
 pwsh -NoProfile -File tests/Test-Devtools.ps1                                 # PowerShell 7, any OS
+pwsh -NoProfile -File tests/Test-Setup.ps1
 ```
 
 The image tests need Linux, macOS or WSL with Docker:
@@ -290,11 +342,12 @@ devtool/
 ├─ Dockerfile            # the image; EXTRA TOOLS block at the bottom
 ├─ docker-compose.yml    # build + persistent volume + dev service
 ├─ .env.example          # versions, proxy, repos path (copy to .env)
+├─ setup.ps1             # one command: check Docker, build, wire the profile, verify every tool
 ├─ Devtools.psm1         # PowerShell wrappers (az/kubectl/terraform/... + dev + Import-DockerDesktopKube)
 ├─ scripts/
 │  ├─ devtools-entrypoint.sh         # keeps Docker Desktop host traffic off the proxy
 │  └─ import-docker-desktop-kube.sh  # copies the docker-desktop kube context into the toolbox
-├─ tests/                # smoke test, importer end-to-end test, PowerShell wrapper tests
+├─ tests/                # smoke test, importer end-to-end test, PowerShell tests (wrappers, setup.ps1)
 ├─ .github/workflows/    # CI: lint, build the image, run the tests above
 ├─ certs/                # drop corporate root CA here (optional)
 └─ repos/                # default mount point if REPOS_ROOT is unset
