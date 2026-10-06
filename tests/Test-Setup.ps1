@@ -65,14 +65,23 @@ function Invoke-Setup {
         [string[]]  $Arguments = @(),
         [hashtable] $Knobs = @{},
         [string]    $Dir = $proj,
-        [string]    $PathOverride
+        [string]    $PathOverride,
+        [switch]    $ConstrainedLanguage
     )
     foreach ($n in $knobNames) { [Environment]::SetEnvironmentVariable($n, $null) }
     foreach ($k in $Knobs.Keys) { [Environment]::SetEnvironmentVariable($k, [string] $Knobs[$k]) }
     $psArgs = @('-NoProfile')
     if ($isWin) { $psArgs += @('-ExecutionPolicy', 'Bypass') }
-    $psArgs += @('-File', (Join-Path $Dir 'setup.ps1'), '-NoPrompt')
-    $psArgs += $Arguments
+    if ($ConstrainedLanguage) {
+        # What a security policy does to a whole session: switch it to Constrained Language Mode
+        # first, then run the script in it.
+        $quoted = @($Arguments | ForEach-Object { if ("$_" -like '-*') { "$_" } else { "'" + "$_".Replace("'", "''") + "'" } }) -join ' '
+        $script = (Join-Path $Dir 'setup.ps1').Replace("'", "''")
+        $psArgs += @('-Command', "`$ExecutionContext.SessionState.LanguageMode = 'ConstrainedLanguage'; & '$script' -NoPrompt $quoted; exit `$LASTEXITCODE")
+    } else {
+        $psArgs += @('-File', (Join-Path $Dir 'setup.ps1'), '-NoPrompt')
+        $psArgs += $Arguments
+    }
 
     $savedPath = $env:PATH
     $savedPref = $ErrorActionPreference
@@ -262,9 +271,31 @@ $d = Show $r
 Check 'exits 2 (set up, but a check failed)'            ($r.Code -eq 2) $d
 Check 'names the broken tool'                           ($r.Text -match '(?m)^  FAIL  terraform') $d
 Check 'still checks the tools after it'                 ($r.Text -match '(?m)^  OK    kubens') $d
-Check 'counts the failure'                              ($r.Text -match '1 tool check\(s\) failed') $d
+Check 'counts the failure'                              ($r.Text -match '1 problem\(s\)') $d
 Check 'the profile was still set up'                    (@(Get-ImportLines).Count -eq 1) $d
 Check 'does not say All set'                            (-not ($r.Text -match 'All set')) $d
+
+Write-Host ''
+Write-Host '-- the profile cannot be written'
+Reset-Project
+$blocker = Join-Path $base 'a file'                  # a FILE where the profile's folder should be
+[IO.File]::WriteAllText($blocker, 'x')
+$r = Invoke-Setup @('-SkipBuild', '-ProfilePath', (Join-Path $blocker 'profile.ps1'))
+$d = Show $r
+Check 'exits 2 (the rest is set up, the profile is not)' ($r.Code -eq 2) $d
+Check 'says it could not update the profile'            ($r.Text -match 'Could not update your profile') $d
+Check 'shows the line to add by hand'                   ($r.Text.Contains($expectedLine)) $d
+Check 'still loads the wrappers and checks the tools'   (($r.Text -match '(?m)^  OK    kubens') -and -not ($r.Text -match 'All set')) $d
+
+Write-Host ''
+Write-Host '-- PowerShell is in Constrained Language Mode'
+Reset-Project
+$r = Invoke-Setup @('-ProfilePath', $prof) -ConstrainedLanguage
+$d = Show $r
+Check 'exits 1'                                         ($r.Code -eq 1) $d
+Check 'names the language mode'                         ($r.Text -match 'ConstrainedLanguage') $d
+Check 'points at docker compose run --rm dev'           ($r.Text -match 'docker compose run --rm dev') $d
+Check 'changes nothing and calls no docker'             ((@(Get-Calls).Count -eq 0) -and -not (Test-Path -LiteralPath (Join-Path $proj '.env')) -and -not (Test-Path -LiteralPath $prof)) $d
 
 # ---- 7. flags ----------------------------------------------------------------------------------
 Write-Host ''

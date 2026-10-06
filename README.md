@@ -56,7 +56,8 @@ Exit code: `0` all good, `1` setup could not finish, `2` setup finished but a to
 That command runs the script in its own PowerShell process, so open a **new** PowerShell window
 afterwards: your profile loads the tools there. (If you start it from your own prompt as
 `.\setup.ps1`, after `Set-ExecutionPolicy -Scope Process Bypass`, the tools are loaded in that
-window too.) If Group Policy blocks scripts altogether, use the manual steps below, or
+window too.) If Group Policy blocks scripts altogether, or PowerShell runs in Constrained
+Language Mode, the wrappers cannot work there: build with `docker compose build` and use
 `docker compose run --rm dev` for a shell inside the toolbox.
 
 The manual steps, one at a time:

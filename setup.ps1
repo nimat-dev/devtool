@@ -17,7 +17,7 @@
     then offers the Azure login and the Docker Desktop Kubernetes import.
 
     Safe to run again at any time: every step checks before it changes anything.
-    Exit code: 0 all good, 1 setup could not finish, 2 setup finished but a tool check failed.
+    Exit code: 0 all good, 1 setup could not finish, 2 setup finished but something above failed.
 
 .PARAMETER SkipBuild    Do not build the image (it is already built).
 .PARAMETER SkipProfile  Do not touch your PowerShell profile.
@@ -116,6 +116,18 @@ function Test-OwnProcess {
 
 Write-Host "DevOps toolbox setup  ($root)" -ForegroundColor Cyan
 
+# A security policy can put PowerShell in Constrained Language Mode. Devtools.psm1 and this script
+# use .NET calls that mode blocks, so say so plainly instead of failing with an obscure error.
+$languageMode = "$($ExecutionContext.SessionState.LanguageMode)"
+if ($languageMode -ne 'FullLanguage') {
+    Write-Fail "PowerShell is running in $languageMode mode here (a security policy on this machine)."
+    Write-Info 'The wrappers and this script need FullLanguage mode, so they cannot work in this PowerShell.'
+    Write-Info 'You can still use the toolbox without them:'
+    Write-Info '    docker compose build'
+    Write-Info '    docker compose run --rm dev      a shell with every tool in it'
+    exit 1
+}
+
 # ---- 1. Docker -------------------------------------------------------------------------------
 Write-Step '1/6  Docker'
 foreach ($f in 'Dockerfile', 'docker-compose.yml', 'Devtools.psm1') {
@@ -187,27 +199,36 @@ Write-Step '4/6  PowerShell profile'
 if ($SkipProfile) {
     Write-Info 'skipped (-SkipProfile)'
 } else {
-    $target = if ($ProfilePath) {
-        $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($ProfilePath)
-    } else {
-        $PROFILE.CurrentUserAllHosts
-    }
-    # Read it the way PowerShell itself would, so non-ASCII text in an existing profile survives.
-    $text = if (Test-Path -LiteralPath $target) { "$(Get-Content -LiteralPath $target -Raw)" } else { '' }
-    $rx   = '(?m)^[ \t]*Import-Module\b[^\r\n]*Devtools\.psm1[^\r\n]*(?=\r?$)'    # (?=\r?$): works for CRLF files too
+    $target = ''
+    try {
+        $target = if ($ProfilePath) {
+            $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($ProfilePath)
+        } else {
+            $PROFILE.CurrentUserAllHosts
+        }
+        # Read it the way PowerShell itself would, so non-ASCII text in an existing profile survives.
+        $text = if (Test-Path -LiteralPath $target) { "$(Get-Content -LiteralPath $target -Raw)" } else { '' }
+        $rx   = '(?m)^[ \t]*Import-Module\b[^\r\n]*Devtools\.psm1[^\r\n]*(?=\r?$)'    # (?=\r?$): works for CRLF files too
 
-    if (@($text -split "`r?`n" | ForEach-Object { $_.Trim() }) -contains $importLine) {
-        Write-Ok "already set up in $target"
-    } elseif ($text -match $rx) {
-        # An older line points at another folder (the project was moved or re-extracted).
-        Copy-Item -LiteralPath $target -Destination "$target.bak" -Force
-        $updated = [regex]::Replace($text, $rx, [System.Text.RegularExpressions.MatchEvaluator]{ param($m) $importLine })
-        [IO.File]::WriteAllText($target, $updated, (New-Object System.Text.UTF8Encoding $true))
-        Write-Ok "updated the existing Import-Module line in $target (backup: $target.bak)"
-    } else {
-        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $target) | Out-Null
-        Add-Content -LiteralPath $target -Encoding UTF8 -Value ("`r`n# DevOps toolbox: az, kubectl, terraform, helm, flux ... run in Docker`r`n" + $importLine)
-        Write-Ok "added the Import-Module line to $target"
+        if (@($text -split "`r?`n" | ForEach-Object { $_.Trim() }) -contains $importLine) {
+            Write-Ok "already set up in $target"
+        } elseif ($text -match $rx) {
+            # An older line points at another folder (the project was moved or re-extracted).
+            Copy-Item -LiteralPath $target -Destination "$target.bak" -Force
+            $updated = [regex]::Replace($text, $rx, [System.Text.RegularExpressions.MatchEvaluator]{ param($m) $importLine })
+            [IO.File]::WriteAllText($target, $updated, (New-Object System.Text.UTF8Encoding $true))
+            Write-Ok "updated the existing Import-Module line in $target (backup: $target.bak)"
+        } else {
+            New-Item -ItemType Directory -Force -Path (Split-Path -Parent $target) | Out-Null
+            Add-Content -LiteralPath $target -Encoding UTF8 -Value ("`r`n# DevOps toolbox: az, kubectl, terraform, helm, flux ... run in Docker`r`n" + $importLine)
+            Write-Ok "added the Import-Module line to $target"
+        }
+    } catch {
+        # Locked-down machines: a read-only or redirected Documents folder, Controlled Folder Access ...
+        Write-Fail "Could not update your profile ($target): $($_.Exception.Message)"
+        Write-Info 'Add this line to it yourself, or run it in each PowerShell window you want the tools in:'
+        Write-Info "    $importLine"
+        $problems++
     }
     if ($isWin -and ((Get-FutureExecutionPolicy) -in 'Restricted', 'AllSigned')) {
         Write-Warn "PowerShell's execution policy is $(Get-FutureExecutionPolicy), so NEW windows will not load the profile."
@@ -279,7 +300,7 @@ if (Test-Wanted $ImportKube "Import Docker Desktop's Kubernetes context now (Kub
 # ---- Summary ---------------------------------------------------------------------------------
 Write-Host ''
 if ($problems -gt 0) {
-    Write-Fail "$problems tool check(s) failed, see above."
+    Write-Fail "$problems problem(s) above need attention."
     exit 2
 }
 Write-Host 'All set.' -ForegroundColor Green
