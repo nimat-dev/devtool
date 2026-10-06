@@ -39,6 +39,8 @@ $env:PATH = $fakebin + [IO.Path]::PathSeparator + $env:PATH   # fake docker wins
 $env:DOCKER_ARGS_FILE = $argsFile
 New-Item -ItemType Directory -Force -Path $workDir | Out-Null
 
+Write-Host ("PowerShell {0} ({1}) on {2}" -f $PSVersionTable.PSVersion, $PSVersionTable.PSEdition, [Environment]::OSVersion.VersionString)
+
 $script:failures = 0
 function Check([string] $Name, [bool] $Condition, [string] $Detail = '') {
     if ($Condition) {
@@ -126,6 +128,40 @@ kubectx my-cluster | Out-Null
 Check 'kubectx passes its argument' (Same (Get-Tail (Get-Recorded)) @('devtools:latest', 'kubectx', 'my-cluster'))
 kubens kube-system | Out-Null
 Check 'kubens passes its argument' (Same (Get-Tail (Get-Recorded)) @('devtools:latest', 'kubens', 'kube-system'))
+
+# ---- arguments must arrive exactly as typed ------------------------------------------------
+# Windows PowerShell 5.1 builds a native command line without escaping embedded double
+# quotes, so JSON and quoted values can reach the program mangled. Every case here is
+# something people really type (kubectl patch -p, terraform -var, az --tags ...).
+$json = '{"spec":{"replicas":3}}'
+kubectl patch deployment web -p $json | Out-Null
+Check 'JSON with double quotes reaches the container intact' `
+    (Same (Get-Tail (Get-Recorded)) @('devtools:latest', 'kubectl', 'patch', 'deployment', 'web', '-p', $json)) "got: $((Get-Tail (Get-Recorded)) -join ' | ')"
+
+terraform apply -var 'name=hello world' | Out-Null
+Check 'an argument that contains a space stays one argument' `
+    (Same (Get-Tail (Get-Recorded)) @('devtools:latest', 'terraform', 'apply', '-var', 'name=hello world')) "got: $((Get-Tail (Get-Recorded)) -join ' | ')"
+
+az group create --name rg --tags 'owner=John "JD" Smith' | Out-Null
+Check 'embedded double quotes plus a space survive' `
+    (Same (Get-Tail (Get-Recorded)) @('devtools:latest', 'az', 'group', 'create', '--name', 'rg', '--tags', 'owner=John "JD" Smith')) "got: $((Get-Tail (Get-Recorded)) -join ' | ')"
+
+terraform '-chdir=C:\my dir\' plan | Out-Null
+Check 'a Windows path with a space and a trailing backslash survives' `
+    (Same (Get-Tail (Get-Recorded)) @('devtools:latest', 'terraform', '-chdir=C:\my dir\', 'plan')) "got: $((Get-Tail (Get-Recorded)) -join ' | ')"
+
+kubectl config set-context ctx --namespace '' | Out-Null
+Check 'an empty-string argument is preserved' `
+    (Same (Get-Tail (Get-Recorded)) @('devtools:latest', 'kubectl', 'config', 'set-context', 'ctx', '--namespace', '')) "got: $((Get-Tail (Get-Recorded)) -join ' | ')"
+
+$spaceDir = Join-Path $workDir 'dir with space'
+New-Item -ItemType Directory -Force -Path $spaceDir | Out-Null
+Set-Location $spaceDir
+az version | Out-Null
+$spaceCwd = (Get-Location).ProviderPath
+Check 'a working directory that contains spaces is mounted as one argument' `
+    ((Get-Recorded) -contains "${spaceCwd}:/work") "got: $((Get-Recorded) -join ' | ')"
+Set-Location $workDir
 
 $env:DOCKER_FORCE_EXIT = '7'
 helm status release | Out-Null
