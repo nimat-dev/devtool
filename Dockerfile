@@ -128,19 +128,25 @@ RUN curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm
  && helm version --short
 
 # ---------------------------------------------------------------------------
-# kustomize (official install script). Pinned via KUSTOMIZE_VERSION.
+# kustomize (GitHub release tarball, direct URL). Pinned via KUSTOMIZE_VERSION.
+# The upstream install script resolves the asset through the unauthenticated GitHub
+# API, which is rate-limited on shared CI runners and often blocked behind corporate
+# proxies, so the release asset is fetched directly instead.
 # ---------------------------------------------------------------------------
 ARG KUSTOMIZE_VERSION=5.5.0
-RUN curl -fsSL "https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh" \
-      | bash -s -- "${KUSTOMIZE_VERSION}" /usr/local/bin \
+RUN curl -fsSLo /tmp/kustomize.tar.gz "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2Fv${KUSTOMIZE_VERSION}/kustomize_v${KUSTOMIZE_VERSION}_linux_amd64.tar.gz" \
+ && tar -xzf /tmp/kustomize.tar.gz -C /usr/local/bin kustomize \
+ && rm -f /tmp/kustomize.tar.gz \
  && kustomize version
 
 # ---------------------------------------------------------------------------
-# Flux CLI (official install script). Pinned via FLUX_VERSION.
+# Flux CLI (GitHub release tarball, direct URL). Pinned via FLUX_VERSION.
+# Same reason as kustomize: the install script goes through the GitHub API.
 # ---------------------------------------------------------------------------
 ARG FLUX_VERSION=2.4.0
-RUN curl -fsSL https://fluxcd.io/install.sh \
-      | FLUX_VERSION="${FLUX_VERSION}" bash \
+RUN curl -fsSLo /tmp/flux.tar.gz "https://github.com/fluxcd/flux2/releases/download/v${FLUX_VERSION}/flux_${FLUX_VERSION}_linux_amd64.tar.gz" \
+ && tar -xzf /tmp/flux.tar.gz -C /usr/local/bin flux \
+ && rm -f /tmp/flux.tar.gz \
  && flux --version
 
 # ---------------------------------------------------------------------------

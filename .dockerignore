@@ -4,3 +4,5 @@
 *.zip
 repos/
 README.md
+tests/
+.github/

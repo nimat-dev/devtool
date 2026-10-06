@@ -1,5 +1,7 @@
 # DevOps Toolbox (containerized CLIs for a locked-down Windows box)
 
+![CI](https://github.com/nimat-dev/devtool/actions/workflows/ci.yml/badge.svg)
+
 One Docker image with every senior-DevOps CLI baked in, plus PowerShell wrappers
 so `az`, `kubectl`, `terraform`, `flux`, `helm`, `kustomize` and `azd` run inside
 the container but feel local. Nothing to install on the host except Docker Desktop,
@@ -20,7 +22,7 @@ Flux CLI, AWS CLI v2, GitHub CLI (gh), kubectx/kubens, plus jq, yq, git, ssh, ma
 ## 1. Build the image
 
 ```powershell
-cd devtools-toolbox
+cd devtool
 copy .env.example .env          # optional; edit versions / proxy / repos path
 docker compose build            # or: docker build -t devtools:latest .
 ```
@@ -43,7 +45,7 @@ notepad $PROFILE
 Add (adjust the path to where this folder lives):
 
 ```powershell
-Import-Module 'C:\path\to\devtools-toolbox\Devtools.psm1' -Force
+Import-Module 'C:\path\to\devtool\Devtools.psm1' -Force
 ```
 
 Reopen PowerShell. Now `az`, `kubectl`, `terraform`, etc. are the container
@@ -105,7 +107,7 @@ Instead of AKS, point the toolbox at the cluster built into Docker Desktop.
    ```
 3. Reload the module and import the context:
    ```powershell
-   Import-Module 'C:\path\to\devtools-toolbox\Devtools.psm1' -Force
+   Import-Module 'C:\path\to\devtool\Devtools.psm1' -Force
    Import-DockerDesktopKube
    ```
    It ends with `Connected to Kubernetes v1.xx` when the container can reach the cluster.
@@ -173,7 +175,7 @@ This project is already a git repo with an initial commit. Since you can't insta
 ```powershell
 docker compose build                 # if you haven't already
 gh auth login                        # choose "Paste an authentication token" (a PAT) — no browser needed
-gh repo create devtools-toolbox --private --source . --remote origin --push
+gh repo create devtool --private --source . --remote origin --push
 ```
 
 That creates the repo under your account and pushes `main` in one shot. `gh` prints
@@ -184,9 +186,40 @@ Plain-git alternative (if you'd rather create the empty repo on github.com first
 ```powershell
 dev                                  # bash shell in the toolbox, project mounted at /work
 # inside the container:
-git remote add origin https://github.com/<you>/devtools-toolbox.git
+git remote add origin https://github.com/<you>/devtool.git
 git push -u origin main              # use a PAT as the password when prompted
 ```
+
+## Tests and CI
+
+Every push runs `.github/workflows/ci.yml` on GitHub's Linux runners (the badge at the top
+shows the latest result). It does two jobs:
+
+- **Lint and PowerShell wrapper tests**: hadolint on the Dockerfile, shellcheck on every shell
+  script, `docker compose config`, and `tests/Test-Devtools.ps1`. That script runs the real
+  `Devtools.psm1` against a fake `docker` and checks the exact `docker run` line each wrapper
+  produces (mounts, working directory, `-out` / `-o` pass-through, exit codes, env overrides).
+- **Build the image and test it**: a real `docker build`, then
+  - `tests/smoke.sh` runs inside the image: every tool starts and reports the version pinned in
+    the Dockerfile, the entrypoint extends `NO_PROXY`, the Terraform plugin cache is set up.
+  - `tests/e2e-import.sh` starts a fake Kubernetes API on the host with a certificate valid only
+    for `kubernetes.docker.internal`, then checks that the container reaches it with TLS verified,
+    that only the `docker-desktop` context is imported (a second context's secret never reaches
+    the volume), that kubectx and kubens work against it, that a re-import is idempotent, and that
+    a dead corporate proxy cannot swallow the host traffic.
+
+Run the same checks yourself on Linux, macOS or WSL:
+
+```bash
+pwsh -NoProfile -File tests/Test-Devtools.ps1                      # wrapper tests, no Docker needed
+docker build -t devtools:ci .
+docker run --rm -v "$PWD/tests:/tests:ro" devtools:ci bash /tests/smoke.sh
+tests/e2e-import.sh devtools:ci                                    # needs openssl and python3
+```
+
+What CI cannot prove: how your corporate proxy and TLS inspection behave, and Docker Desktop's
+real Kubernetes (the end-to-end test uses a fake API server on Linux). Run
+`Import-DockerDesktopKube` on the laptop for that last mile.
 
 ---
 
@@ -221,7 +254,7 @@ wrappers mount `$PWD`).
 ## Layout
 
 ```
-devtools-toolbox/
+devtool/
 ├─ Dockerfile            # the image; EXTRA TOOLS block at the bottom
 ├─ docker-compose.yml    # build + persistent volume + dev service
 ├─ .env.example          # versions, proxy, repos path (copy to .env)
@@ -229,6 +262,8 @@ devtools-toolbox/
 ├─ scripts/
 │  ├─ devtools-entrypoint.sh         # keeps Docker Desktop host traffic off the proxy
 │  └─ import-docker-desktop-kube.sh  # copies the docker-desktop kube context into the toolbox
+├─ tests/                # smoke test, importer end-to-end test, PowerShell wrapper tests
+├─ .github/workflows/    # CI: lint, build the image, run the tests above
 ├─ certs/                # drop corporate root CA here (optional)
 └─ repos/                # default mount point if REPOS_ROOT is unset
 ```

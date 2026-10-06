@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Fake `docker` for the PowerShell wrapper tests (tests/Test-Devtools.ps1).
+# Records the arguments it was given, one per line, in $DOCKER_ARGS_FILE and exits
+# with $DOCKER_FORCE_EXIT (default 0), so the wrappers can be tested without a daemon.
+: "${DOCKER_ARGS_FILE:=/tmp/docker_args.txt}"
+printf '%s\n' "$@" > "$DOCKER_ARGS_FILE"
+exit "${DOCKER_FORCE_EXIT:-0}"
