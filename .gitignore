@@ -1,0 +1,6 @@
+.env
+*.zip
+repos/*
+!repos/.gitkeep
+certs/*.crt
+certs/*.pem

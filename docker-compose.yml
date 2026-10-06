@@ -1,0 +1,39 @@
+name: devtools
+
+services:
+  # Interactive shell with the full toolbox:  docker compose run --rm dev
+  # (or:  docker compose up -d dev  then  docker compose exec dev bash)
+  dev:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        HTTP_PROXY: ${HTTP_PROXY:-}
+        HTTPS_PROXY: ${HTTPS_PROXY:-}
+        AZURE_CLI_VERSION: ${AZURE_CLI_VERSION:-}
+        TERRAFORM_VERSION: ${TERRAFORM_VERSION:-}
+        AZD_VERSION: ${AZD_VERSION:-}
+        AWSCLI_VERSION: ${AWSCLI_VERSION:-}
+        KUBECTL_VERSION: ${KUBECTL_VERSION:-1.31.4}
+        KUBELOGIN_VERSION: ${KUBELOGIN_VERSION:-0.1.4}
+        HELM_VERSION: ${HELM_VERSION:-3.16.3}
+        KUSTOMIZE_VERSION: ${KUSTOMIZE_VERSION:-5.5.0}
+        FLUX_VERSION: ${FLUX_VERSION:-2.4.0}
+        YQ_VERSION: ${YQ_VERSION:-4.44.6}
+        GH_VERSION: ${GH_VERSION:-2.63.2}
+        KUBECTX_VERSION: ${KUBECTX_VERSION:-0.9.5}
+    image: devtools:latest
+    stdin_open: true
+    tty: true
+    volumes:
+      # Persists ~/.azure, ~/.kube, ~/.aws, ssh keys, shell history, TF plugin cache.
+      # SAME volume the PowerShell wrappers use, so a login here is a login there.
+      - devtools-home:/root
+      # Your code. Set REPOS_ROOT in .env to an absolute path to mount real repos;
+      # defaults to the ./repos folder in this project so it works out of the box.
+      - ${REPOS_ROOT:-./repos}:/repos
+    working_dir: /repos
+    command: ["bash"]
+
+volumes:
+  devtools-home:
