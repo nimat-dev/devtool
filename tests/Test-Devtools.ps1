@@ -176,9 +176,12 @@ Remove-Item Env:\DOCKER_FORCE_EXIT
 Set-Location $root
 Remove-Item $argsFile, $workDir -Recurse -Force -ErrorAction SilentlyContinue
 Write-Host ''
+# Always finish with an explicit exit code. The checks above leave $LASTEXITCODE at 3 (they
+# test exit-code propagation), and CI runners end a pwsh step with `exit $LASTEXITCODE`,
+# which would turn a fully green run into a failed step.
 if ($script:failures -eq 0) {
     Write-Host "ALL TESTS PASSED ($($exported.Count) commands exported)"
-} else {
-    Write-Host "$($script:failures) TEST(S) FAILED"
-    exit 1
+    exit 0
 }
+Write-Host "$($script:failures) TEST(S) FAILED"
+exit 1

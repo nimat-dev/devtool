@@ -23,7 +23,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: hadolint
         run: |
@@ -33,24 +33,30 @@ jobs:
 
       - name: shellcheck
         run: |
-          command -v shellcheck >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck; }
-          shellcheck --version | sed -n 2p
-          shellcheck -s sh scripts/devtools-entrypoint.sh
-          shellcheck -s bash scripts/import-docker-desktop-kube.sh tests/smoke.sh tests/e2e-import.sh tests/fakebin/docker
+          curl -fsSL https://github.com/koalaman/shellcheck/releases/download/v0.10.0/shellcheck-v0.10.0.linux.x86_64.tar.xz \
+            | tar -xJ -C "$RUNNER_TEMP"
+          sc="$RUNNER_TEMP/shellcheck-v0.10.0/shellcheck"
+          "$sc" --version | sed -n 2p
+          "$sc" -s sh scripts/devtools-entrypoint.sh
+          "$sc" -s bash scripts/import-docker-desktop-kube.sh tests/*.sh tests/fakebin/docker
 
       - name: Compose file renders
         run: docker compose config -q
 
       - name: PowerShell wrapper tests
-        shell: pwsh
-        run: ./tests/Test-Devtools.ps1
+        id: pwsh
+        run: pwsh -NoProfile -File tests/Test-Devtools.ps1 2>&1 | tee "$RUNNER_TEMP/pwsh.log"
+
+      - name: Report results as annotations
+        if: always()
+        run: tests/ci-annotate.sh "PowerShell wrapper tests" "${{ steps.pwsh.outcome }}" "$RUNNER_TEMP/pwsh.log" '^(PASS|FAIL|SKIP|ALL TESTS|[0-9]+ TEST|      )'
 
   image:
     name: Build the image and test it
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Build image
         id: build
@@ -75,17 +81,12 @@ jobs:
         id: e2e
         run: tests/e2e-import.sh devtools:ci 2>&1 | tee "$RUNNER_TEMP/e2e.log"
 
-      - name: Annotate failures
-        if: failure()
+      - name: Report results as annotations
+        if: always()
         run: |
-          annotate() { # annotate TITLE FILE PATTERN
-            local msg
-            msg=$(grep -E "$3" "$2" | tail -n 25 | cut -c1-220 | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
-            echo "::error title=$1::${msg}"
-          }
-          if [ "${{ steps.build.outcome }}" = failure ]; then annotate "docker build failed" "$RUNNER_TEMP/build.log" '.'; fi
-          if [ "${{ steps.smoke.outcome }}" = failure ]; then annotate "smoke test" "$RUNNER_TEMP/smoke.log" '^(FAIL|RESULT)'; fi
-          if [ "${{ steps.e2e.outcome }}" = failure ]; then annotate "importer end to end" "$RUNNER_TEMP/e2e.log" '^(FAIL|RESULT|fake API|PKI)'; fi
+          tests/ci-annotate.sh "docker build" "${{ steps.build.outcome }}" "$RUNNER_TEMP/build.log"
+          tests/ci-annotate.sh "smoke test" "${{ steps.smoke.outcome }}" "$RUNNER_TEMP/smoke.log" '^(PASS|FAIL|RESULT|---)'
+          tests/ci-annotate.sh "importer end to end" "${{ steps.e2e.outcome }}" "$RUNNER_TEMP/e2e.log" '^(PASS|FAIL|RESULT|==|\[setup\]|fake API|PKI|      \|)'
 
       - name: Publish results to the job summary
         if: always()
