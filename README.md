@@ -259,6 +259,11 @@ UTF-8. Add this line to your `$PROFILE`:
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 ```
 
+**Quotes in an argument (JSON for `kubectl patch -p`, `az --tags`, `terraform -var`).** Type them
+naturally, e.g. `kubectl patch deploy web -p '{"spec":{"replicas":3}}'`. Windows PowerShell 5.1
+normally strips the double quotes from native command arguments; the wrappers escape them for
+you, so don't add backslashes. CI checks this in both Windows PowerShell 5.1 and PowerShell 7.
+
 **`az login` opens nothing / hangs.** Use `az login --use-device-code`. The
 container has no browser, so the normal interactive login can't work.
 

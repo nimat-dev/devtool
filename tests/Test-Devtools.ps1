@@ -154,6 +154,26 @@ kubectl config set-context ctx --namespace '' | Out-Null
 Check 'an empty-string argument is preserved' `
     (Same (Get-Tail (Get-Recorded)) @('devtools:latest', 'kubectl', 'config', 'set-context', 'ctx', '--namespace', '')) "got: $((Get-Tail (Get-Recorded)) -join ' | ')"
 
+# The escaping rules themselves (private helper, called inside the module's scope). They only
+# apply where PowerShell builds native command lines the legacy way (Windows PowerShell 5.1).
+# The one version-dependent case: 5.1 leaves a trailing backslash unprotected, 7.x does not.
+$mod       = Get-Module Devtools
+$trailing  = if ($PSVersionTable.PSVersion.Major -lt 6) { 'C:\my dir\\' } else { 'C:\my dir\' }
+$escapeMap = @(
+    , @('{"a":1}',        '{\"a\":1}')
+    , @('',               '""')
+    , @('plain',          'plain')
+    , @('a b',            'a b')
+    , @('say "hi there"', 'say \"hi there\"')
+    , @('C:\path\',       'C:\path\')
+    , @('a\"b',           'a\\\"b')
+    , @('C:\my dir\',     $trailing)
+)
+foreach ($pair in $escapeMap) {
+    $got = & $mod { param($s) ConvertTo-LegacyNativeArg $s } $pair[0]
+    Check "legacy quoting turns [$($pair[0])] into [$($pair[1])]" ($got -ceq $pair[1]) "got: [$got]"
+}
+
 $spaceDir = Join-Path $workDir 'dir with space'
 New-Item -ItemType Directory -Force -Path $spaceDir | Out-Null
 Set-Location $spaceDir

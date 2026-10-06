@@ -65,6 +65,52 @@ function Get-BaseRunArgs {
     return ,$a
 }
 
+# Windows PowerShell 5.1 (and PowerShell 7.0 - 7.2, or 7.3+ with $PSNativeCommandArgumentPassing
+# set to 'Legacy') builds a native command line without escaping embedded double quotes and
+# drops empty arguments. So `kubectl patch -p '{"a":1}'` would reach the container as {a:1}.
+# For those shells the arguments are escaped by hand, following the Windows command-line rules
+# (CommandLineToArgvW), so every argument arrives exactly as typed. Newer PowerShell does this
+# itself, and then the arguments are passed through untouched.
+function Test-LegacyNativeArgs {
+    $v = $PSVersionTable.PSVersion
+    if ($v.Major -lt 7 -or ($v.Major -eq 7 -and $v.Minor -lt 3)) { return $true }
+    $mode = Get-Variable -Name PSNativeCommandArgumentPassing -ValueOnly -ErrorAction SilentlyContinue
+    return ("$mode" -eq 'Legacy')
+}
+
+function ConvertTo-LegacyNativeArg {
+    param([string] $Arg)
+
+    # An empty argument vanishes in the legacy behaviour; "" keeps it.
+    if ($Arg.Length -eq 0) { return '""' }
+
+    # Escape every double quote, doubling any backslashes directly in front of it.
+    $s = [regex]::Replace($Arg, '(\\*)"', '$1$1\"')
+
+    # PowerShell wraps an argument that contains whitespace in quotes. Windows PowerShell 5.1
+    # does not protect a backslash at the very end of it, so that backslash would escape the
+    # closing quote: double them. (PowerShell 7 does this itself, even in its legacy mode.)
+    if ($PSVersionTable.PSVersion.Major -lt 6 -and $s -match '\s') {
+        $s = [regex]::Replace($s, '(\\+)\z', '$1$1')
+    }
+
+    return $s
+}
+
+# Run the real docker with these arguments, each one arriving exactly as given.
+function Invoke-Docker {
+    param([string[]] $DockerArgs)
+
+    $docker = Resolve-Docker
+    if (Test-LegacyNativeArgs) {
+        $DockerArgs = @($DockerArgs | ForEach-Object { ConvertTo-LegacyNativeArg $_ })
+    }
+
+    # $LASTEXITCODE is set automatically and propagates to the caller — do NOT
+    # call `exit`, that would kill the user's interactive session.
+    & $docker @DockerArgs
+}
+
 # Core runner (the "dev-run" helper). Builds a one-shot `docker run` and execs it.
 # NOTE: intentionally NOT an advanced function, and tool args arrive as an explicit
 # array value — so tool flags like `-out` are passed through as data, never parsed
@@ -75,26 +121,22 @@ function Invoke-DevTool {
         [string[]] $ToolArgs = @()
     )
 
-    $docker  = Resolve-Docker
     $runArgs = Get-BaseRunArgs -AllowTty $true
     $runArgs.Add($script:DevToolsImage)
     $runArgs.Add($Tool)
     if ($ToolArgs.Count -gt 0) { $runArgs.AddRange([string[]] $ToolArgs) }
 
-    # $LASTEXITCODE is set automatically and propagates to the caller — do NOT
-    # call `exit`, that would kill the user's interactive session.
-    & $docker @runArgs
+    Invoke-Docker -DockerArgs ($runArgs.ToArray())
 }
 
 # Open an interactive bash shell in the toolbox with the same mounts.
 function dev {
     $devArgs = @($args)
-    $docker  = Resolve-Docker
     $runArgs = Get-BaseRunArgs -AllowTty $true
     $runArgs.Add($script:DevToolsImage)
     if ($devArgs.Count -gt 0) { $runArgs.AddRange([string[]] $devArgs) } else { $runArgs.Add('bash') }
 
-    & $docker @runArgs
+    Invoke-Docker -DockerArgs ($runArgs.ToArray())
 }
 
 # Make Docker Desktop's Kubernetes usable from the toolbox. The container keeps its own
@@ -115,7 +157,6 @@ function Import-DockerDesktopKube {
         return
     }
 
-    $docker  = Resolve-Docker
     $runArgs = [System.Collections.Generic.List[string]]::new()
     $runArgs.AddRange([string[]]@('run', '--rm', '-i'))
     $runArgs.AddRange([string[]]@('-v', "$($script:DevToolsVolume):/root"))
@@ -123,7 +164,7 @@ function Import-DockerDesktopKube {
     $runArgs.Add($script:DevToolsImage)
     $runArgs.AddRange([string[]]@('import-docker-desktop-kube', $Context))
 
-    & $docker @runArgs
+    Invoke-Docker -DockerArgs ($runArgs.ToArray())
 
     # 127 = "executable not found": the image predates the helper scripts.
     if ($LASTEXITCODE -eq 127) {
