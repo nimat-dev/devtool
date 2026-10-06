@@ -49,7 +49,30 @@ jobs:
 
       - name: Report results as annotations
         if: always()
-        run: tests/ci-annotate.sh "PowerShell wrapper tests" "${{ steps.pwsh.outcome }}" "$RUNNER_TEMP/pwsh.log" '^(PASS|FAIL|SKIP|ALL TESTS|[0-9]+ TEST|      )'
+        run: tests/ci-annotate.sh "PowerShell wrapper tests" "${{ steps.pwsh.outcome }}" "$RUNNER_TEMP/pwsh.log"
+
+  windows:
+    # The wrappers are meant for Windows, where the default shell is Windows PowerShell 5.1.
+    # Docker cannot run Linux containers on these runners, so a fake docker.exe records the
+    # arguments instead (see tests/fakebin/docker.cs). That still covers what differs on
+    # Windows: PowerShell 5.1 syntax, parameter binding, native argument passing, path handling.
+    name: PowerShell wrappers on Windows (${{ matrix.ps }})
+    runs-on: windows-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        ps: [powershell, pwsh]   # Windows PowerShell 5.1 and PowerShell 7
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: PowerShell wrapper tests
+        id: pwsh
+        run: ${{ matrix.ps }} -NoProfile -ExecutionPolicy Bypass -File tests/Test-Devtools.ps1 2>&1 | tee "$RUNNER_TEMP/pwsh.log"
+
+      - name: Report results as annotations
+        if: always()
+        run: tests/ci-annotate.sh "wrapper tests on Windows (${{ matrix.ps }})" "${{ steps.pwsh.outcome }}" "$RUNNER_TEMP/pwsh.log"
 
   image:
     name: Build the image and test it

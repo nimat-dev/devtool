@@ -1,22 +1,40 @@
-#Requires -Version 7.0
+#Requires -Version 5.1
 <#
-    Tests for Devtools.psm1, run against a fake `docker` (tests/fakebin/docker) that records
-    the arguments it was given, so no Docker daemon is needed. Linux and macOS only, because
-    the fake docker is a shell script (CI runs this on Ubuntu; on Windows use WSL).
+    Tests for Devtools.psm1, run against a fake `docker` that records the arguments it was
+    given, so no Docker daemon is needed. Works in Windows PowerShell 5.1, in PowerShell 7 on
+    Windows, and in PowerShell 7 on Linux and macOS:
 
         pwsh -NoProfile -File tests/Test-Devtools.ps1
+        powershell -NoProfile -ExecutionPolicy Bypass -File tests\Test-Devtools.ps1
+
+    On Linux and macOS the fake is the shell script tests/fakebin/docker. On Windows it is a
+    docker.exe compiled on the fly from tests/fakebin/docker.cs, because the module looks for
+    a real docker.exe.
 #>
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
 $root     = Split-Path -Parent $PSScriptRoot
 $module   = Join-Path $root 'Devtools.psm1'
-$fakebin  = Join-Path $PSScriptRoot 'fakebin'
 $tmp      = [IO.Path]::GetTempPath()
+$isWin    = ($env:OS -eq 'Windows_NT')
 $argsFile = Join-Path $tmp "devtools-docker-args-$PID.txt"
 $workDir  = Join-Path $tmp "devtools-test-work-$PID"
 
-& chmod +x (Join-Path $fakebin 'docker')
+if ($isWin) {
+    $fakebin = Join-Path $tmp "devtools-fakebin-$PID"
+    New-Item -ItemType Directory -Force -Path $fakebin | Out-Null
+    $cs  = Join-Path (Join-Path $PSScriptRoot 'fakebin') 'docker.cs'
+    $exe = Join-Path $fakebin 'docker.exe'
+    # Add-Type -OutputAssembly only exists in Windows PowerShell, so compile with that
+    # whichever PowerShell is running the tests.
+    $compile = "Add-Type -TypeDefinition (Get-Content -Raw -LiteralPath '$cs') -OutputAssembly '$exe' -OutputType ConsoleApplication"
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -Command $compile
+    if (-not (Test-Path -LiteralPath $exe)) { throw "could not build the fake docker.exe from $cs" }
+} else {
+    $fakebin = Join-Path $PSScriptRoot 'fakebin'
+    & chmod +x (Join-Path $fakebin 'docker')
+}
 $env:PATH = $fakebin + [IO.Path]::PathSeparator + $env:PATH   # fake docker wins over a real one
 $env:DOCKER_ARGS_FILE = $argsFile
 New-Item -ItemType Directory -Force -Path $workDir | Out-Null
@@ -127,7 +145,8 @@ Check 'Get-DevToolsInfo reports image, volume and the full tool list' `
 # Env overrides are read at import time, so use a fresh PowerShell process.
 $env:DEVTOOLS_IMAGE  = 'myregistry.azurecr.io/devtools:v2'
 $env:DEVTOOLS_VOLUME = 'team-creds'
-& (Join-Path $PSHOME 'pwsh') -NoProfile -Command "Import-Module '$module' -Force; az version | Out-Null" | Out-Null
+$self = (Get-Process -Id $PID).Path     # the PowerShell that is running these tests
+& $self -NoProfile -Command "Import-Module '$module' -Force; az version | Out-Null" | Out-Null
 Remove-Item Env:\DEVTOOLS_IMAGE, Env:\DEVTOOLS_VOLUME
 $rec = Get-Recorded
 Check 'DEVTOOLS_IMAGE and DEVTOOLS_VOLUME overrides are honoured' `
@@ -175,6 +194,7 @@ Remove-Item Env:\DOCKER_FORCE_EXIT
 # ---- done ---------------------------------------------------------------------------------------
 Set-Location $root
 Remove-Item $argsFile, $workDir -Recurse -Force -ErrorAction SilentlyContinue
+if ($isWin) { Remove-Item $fakebin -Recurse -Force -ErrorAction SilentlyContinue }
 Write-Host ''
 # Always finish with an explicit exit code. The checks above leave $LASTEXITCODE at 3 (they
 # test exit-code propagation), and CI runners end a pwsh step with `exit $LASTEXITCODE`,

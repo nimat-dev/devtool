@@ -192,14 +192,18 @@ git push -u origin main              # use a PAT as the password when prompted
 
 ## Tests and CI
 
-Every push runs `.github/workflows/ci.yml` on GitHub's Linux runners (the badge at the top
-shows the latest result). It does two jobs:
+Every push runs `.github/workflows/ci.yml` on GitHub's runners (the badge at the top shows the
+latest result). It runs three jobs:
 
-- **Lint and PowerShell wrapper tests**: hadolint on the Dockerfile, shellcheck on every shell
-  script, `docker compose config`, and `tests/Test-Devtools.ps1`. That script runs the real
+- **Lint and PowerShell wrapper tests** (Linux): hadolint on the Dockerfile, shellcheck on every
+  shell script, `docker compose config`, and `tests/Test-Devtools.ps1`. That script runs the real
   `Devtools.psm1` against a fake `docker` and checks the exact `docker run` line each wrapper
   produces (mounts, working directory, `-out` / `-o` pass-through, exit codes, env overrides).
-- **Build the image and test it**: a real `docker build`, then
+- **PowerShell wrappers on Windows**: the same wrapper tests in Windows PowerShell 5.1 and in
+  PowerShell 7 on a Windows runner, with a fake `docker.exe`. Windows runners cannot run Linux
+  containers, so this covers the PowerShell side only: 5.1 syntax, parameter binding, native
+  argument passing and Windows paths.
+- **Build the image and test it** (Linux): a real `docker build`, then
   - `tests/smoke.sh` runs inside the image: every tool starts and reports the version pinned in
     the Dockerfile, the entrypoint extends `NO_PROXY`, the Terraform plugin cache is set up.
   - `tests/e2e-import.sh` starts a fake Kubernetes API on the host with a certificate valid only
@@ -208,10 +212,16 @@ shows the latest result). It does two jobs:
     the volume), that kubectx and kubens work against it, that a re-import is idempotent, and that
     a dead corporate proxy cannot swallow the host traffic.
 
-Run the same checks yourself on Linux, macOS or WSL:
+Run the wrapper tests on your own machine (no Docker needed):
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File tests\Test-Devtools.ps1   # Windows PowerShell 5.1
+pwsh -NoProfile -File tests/Test-Devtools.ps1                                 # PowerShell 7, any OS
+```
+
+The image tests need Linux, macOS or WSL with Docker:
 
 ```bash
-pwsh -NoProfile -File tests/Test-Devtools.ps1                      # wrapper tests, no Docker needed
 docker build -t devtools:ci .
 docker run --rm -v "$PWD/tests:/tests:ro" devtools:ci bash /tests/smoke.sh
 tests/e2e-import.sh devtools:ci                                    # needs openssl and python3
@@ -231,6 +241,23 @@ Two things, usually both:
    trusts it before any download. See `certs/README.md`.
 2. Set the proxy — in `.env` (`HTTP_PROXY` / `HTTPS_PROXY`) and in Docker Desktop
    under *Settings → Resources → Proxies*. Then `docker compose build`.
+
+**`Import-Module` fails with "running scripts is disabled on this system" (or "not digitally
+signed").** PowerShell's execution policy is blocking the module. For your user only, no admin
+needed:
+```powershell
+Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
+Unblock-File 'C:\path\to\devtool\Devtools.psm1'     # needed if the folder came from a downloaded ZIP
+```
+If a Group Policy enforces the policy, PowerShell will refuse the change. The module can't load
+then; use `docker compose run --rm dev` instead, which gives you the same toolbox in a shell.
+
+**Garbled characters (`â€"`, `Γöé`, broken box lines) in Terraform or `gh` output.** Windows
+PowerShell decodes native output with the legacy console code page, but the container prints
+UTF-8. Add this line to your `$PROFILE`:
+```powershell
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+```
 
 **`az login` opens nothing / hangs.** Use `az login --use-device-code`. The
 container has no browser, so the normal interactive login can't work.
