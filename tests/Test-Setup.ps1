@@ -192,6 +192,26 @@ Check 'keeps the Windows line endings'                  ($new.Contains("`r`n") -
 Check 'saves a .bak copy of the old profile'            ((Test-Path -LiteralPath "$prof.bak") -and (Read-Text "$prof.bak").Contains('C:\old place')) $d
 Check 'writes UTF-8 with a byte-order mark (5.1 reads it right)' ((([IO.File]::ReadAllBytes($prof))[0]) -eq 0xEF) $d
 
+Write-Host ''
+Write-Host '-- project folder moved, and the old line was typed by hand'
+Reset-Project
+New-Item -ItemType Directory -Force -Path (Split-Path -Parent $prof) | Out-Null
+[IO.File]::WriteAllText($prof, "import-module 'c:\old place\devtools.psm1' -force`r`n`$y = 2`r`n")
+$r = Invoke-Setup @('-SkipBuild', '-SkipVerify', '-ProfilePath', $prof)
+$d = Show $r
+$new = Read-Text $prof
+Check 'exits 0'                                         ($r.Code -eq 0) $d
+Check 'replaces a lowercase import-module line too'     ($new.Contains($expectedLine) -and -not $new.Contains('old place')) $new
+Check 'leaves exactly one Import-Module line'           (@(Get-ImportLines).Count -eq 1) $new
+Check 'keeps your other profile line'                   ($new.Contains('$y = 2')) $new
+
+Reset-Project
+New-Item -ItemType Directory -Force -Path (Split-Path -Parent $prof) | Out-Null
+[IO.File]::WriteAllText($prof, "ipmo C:\old\Devtools.psm1`r`n")
+$r = Invoke-Setup @('-SkipBuild', '-SkipVerify', '-ProfilePath', $prof)
+$new = Read-Text $prof
+Check 'replaces an ipmo line too'                       (($r.Code -eq 0) -and $new.Contains($expectedLine) -and -not ($new -match 'ipmo')) $new
+
 # ---- 4. things that must stop the script before it changes anything ------------------------------
 Write-Host ''
 Write-Host '-- Docker not running'

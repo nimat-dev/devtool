@@ -208,7 +208,8 @@ if ($SkipProfile) {
         }
         # Read it the way PowerShell itself would, so non-ASCII text in an existing profile survives.
         $text = if (Test-Path -LiteralPath $target) { "$(Get-Content -LiteralPath $target -Raw)" } else { '' }
-        $rx   = '(?m)^[ \t]*Import-Module\b[^\r\n]*Devtools\.psm1[^\r\n]*(?=\r?$)'    # (?=\r?$): works for CRLF files too
+        # (?i): a line typed by hand as "import-module ... devtools.psm1" counts too. (?=\r?$): works for CRLF files.
+        $rx   = '(?mi)^[ \t]*(?:Import-Module|ipmo)\b[^\r\n]*Devtools\.psm1[^\r\n]*(?=\r?$)'
 
         if (@($text -split "`r?`n" | ForEach-Object { $_.Trim() }) -contains $importLine) {
             Write-Ok "already set up in $target"
