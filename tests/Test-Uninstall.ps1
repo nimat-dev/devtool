@@ -528,7 +528,7 @@ Reset-Project
 $r = Invoke-Uninstall @('-SkipProfile', '-RemoveVolume') @{ DOCKER_VOLUMES = $volumesBoth } -Ask -StdIn @('y')
 $d = Show $r
 Check 'exits 0'                                         ($r.Code -eq 0) $d
-Check 'asks about both volumes by name'                 ($r.Text -match 'Delete devtools-home and devtools_devtools-home\?') $d
+Check 'asks about both volumes by name, in the output'  ($r.Text -match '(?m)^  WARN  Delete devtools-home and devtools_devtools-home\? It holds your saved') $d
 Check 'deletes them'                                    (((Get-CallCount '^volume rm devtools-home$') -eq 1) -and ((Get-CallCount '^volume rm devtools_devtools-home$') -eq 1)) (@(Get-Calls) -join ' | ')
 
 Write-Host ''

@@ -362,9 +362,11 @@ if ($RemoveVolume) {
             if (-not $go -and $NoPrompt) {
                 Write-Warn "kept $names : deleting it needs -Force when no question can be asked"
             } elseif (-not $go) {
-                $answer   = ''
-                $question = 'Delete {0}? It holds your saved az, gh and kubectl logins and everything else in the toolbox home folder. [y/N]' -f $names
-                try { $answer = "$(Read-Host $question)" } catch { }
+                # The question is written as a normal line (not as the Read-Host prompt) so that it also shows
+                # in a transcript or a log, where a prompt does not.
+                Write-Warn ('Delete {0}? It holds your saved az, gh and kubectl logins and everything else in the toolbox home folder.' -f $names)
+                $answer = ''
+                try { $answer = "$(Read-Host 'Delete it? [y/N]')" } catch { }
                 $go = ($answer -match '^\s*y(es)?\s*$')
                 if (-not $go) { Write-Info "kept $names" }
             }
