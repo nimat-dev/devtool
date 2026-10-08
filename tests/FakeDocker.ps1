@@ -6,8 +6,8 @@
 #     Remove-FakeDocker $fakebin
 #
 # On Linux and macOS the fake is the shell script tests/fakebin/docker. On Windows it is a
-# docker.exe compiled from tests/fakebin/docker.cs, because the module and setup.ps1 look for a
-# real docker.exe. (See the top of tests/fakebin/docker for the knobs the fake understands.)
+# docker.exe compiled from tests/fakebin/docker.cs, because the module, setup.ps1 and uninstall.ps1
+# look for a real docker.exe. (See the top of tests/fakebin/docker for the knobs the fake understands.)
 
 $isWin = ($env:OS -eq 'Windows_NT')
 

@@ -1,5 +1,5 @@
 // Stand-in for docker.exe used by the PowerShell tests on Windows. It is compiled on the fly
-// (Windows PowerShell's Add-Type) because the module and setup.ps1 look for a real docker.exe.
+// (Windows PowerShell's Add-Type) because the module, setup.ps1 and uninstall.ps1 look for a real docker.exe.
 // Same contract as the shell script tests/fakebin/docker used on Linux and macOS; see the
 // comment at the top of that file for the environment variables.
 using System;
@@ -74,6 +74,35 @@ public static class FakeDocker
         if (first == "run" && !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("DOCKER_FAKE_OUTPUT")))
         {
             Console.WriteLine("fake docker run ok");
+        }
+        if (first == "ps")
+        {
+            string psFile = Environment.GetEnvironmentVariable("DOCKER_PS_FILE");
+            if (!string.IsNullOrEmpty(psFile) && File.Exists(psFile))
+            {
+                Console.Write(File.ReadAllText(psFile));
+            }
+        }
+        if (first == "rm")
+        {
+            string psFile = Environment.GetEnvironmentVariable("DOCKER_PS_FILE");
+            if (!string.IsNullOrEmpty(psFile))
+            {
+                File.WriteAllText(psFile, "");
+            }
+        }
+        if (first == "volume" && second == "inspect")
+        {
+            string wanted = args.Length > 2 ? args[2] : "";
+            string known = Environment.GetEnvironmentVariable("DOCKER_VOLUMES") ?? "";
+            foreach (string v in known.Split(new char[] { ' ' }, StringSplitOptions.RemoveEmptyEntries))
+            {
+                if (v == wanted)
+                {
+                    return 0;
+                }
+            }
+            return 1;
         }
         return Code("DOCKER_FORCE_EXIT", 0);
     }

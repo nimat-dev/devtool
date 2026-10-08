@@ -60,6 +60,8 @@ window too.) If Group Policy blocks scripts altogether, or PowerShell runs in Co
 Language Mode, the wrappers cannot work there: build with `docker compose build` and use
 `docker compose run --rm dev` for a shell inside the toolbox.
 
+To undo all of this later, run `uninstall.ps1` (see [Stop and remove it](#stop-and-remove-it-one-command)).
+
 The manual steps, one at a time:
 
 ## 1. Build the image
@@ -233,13 +235,55 @@ git remote add origin https://github.com/<you>/devtool.git
 git push -u origin main              # use a PAT as the password when prompted
 ```
 
+## Stop and remove it: one command
+
+`uninstall.ps1` is the undo for `setup.ps1`. In the PowerShell window you use the tools in:
+
+```powershell
+.\uninstall.ps1
+```
+
+If scripts are blocked, run `powershell -NoProfile -ExecutionPolicy Bypass -File .\uninstall.ps1`
+instead, then `Remove-Module Devtools` in the window you were using. It does this, in order:
+
+1. removes the `Import-Module` line from your PowerShell profile (a `.bak` copy is saved first). It
+   looks in the profiles of Windows PowerShell 5.1 and of PowerShell 7, which keep theirs in
+   different folders
+2. unloads the wrappers from the window it runs in, so `az`, `kubectl` and the rest are the
+   programs installed on the PC again (or "not recognized" when there are none)
+3. stops and removes the toolbox containers: `docker compose down`, then anything still running
+   from the image, such as a `dev` shell open in another window
+4. only when you ask: deletes the image and your saved logins
+
+The image takes minutes to build and the volume holds your Azure, GitHub and Kubernetes logins,
+so both are **kept** unless you ask. Your project folder and `.env` are never touched. It works
+with Docker Desktop stopped (the profile and the window are cleaned first) and is safe to run again.
+
+| Option | What it does |
+| --- | --- |
+| `-RemoveImage` | also delete the image `devtools:latest` (`setup.ps1` builds it again) |
+| `-RemoveVolume` | also delete the volume with your saved logins. Asks first |
+| `-Force` | do not ask before deleting the volume |
+| `-SkipProfile` | leave your PowerShell profile alone |
+| `-NoPrompt` | never ask a question (for automation); the volume is then deleted only with `-Force` |
+| `-ProfilePath <file>` | clean this profile instead of looking for yours |
+
+Exit code: `0` done, `1` could not run (Constrained Language Mode), `2` finished but something
+above failed. For everything at once: `.\uninstall.ps1 -RemoveImage -RemoveVolume`.
+
+PowerShell windows that were already open keep the wrappers until you close them or run
+`Remove-Module Devtools` in them. Only the default names are handled: the image `devtools:latest`
+and the volumes `devtools-home` (used by the wrappers) and `devtools_devtools-home` (the one
+`docker compose run` creates, because Compose prefixes volume names with the project name). A name
+you chose with `DEVTOOLS_IMAGE` or `DEVTOOLS_VOLUME` is left alone.
+
 ## Tests and CI
 
 Every push runs `.github/workflows/ci.yml` on GitHub's runners (the badge at the top shows the
 latest result). It runs three jobs:
 
 - **Lint and PowerShell tests** (Linux): hadolint on the Dockerfile, shellcheck on every shell
-  script, `docker compose config`, and two PowerShell test scripts that run against a fake
+  script, `docker compose config`, and three PowerShell test scripts that run against a fake
   `docker`:
   - `tests/Test-Devtools.ps1` runs the real `Devtools.psm1` and checks the exact `docker run`
     line each wrapper produces (mounts, working directory, `-out` / `-o` pass-through, exit
@@ -248,10 +292,15 @@ latest result). It runs three jobs:
     it has to handle: first run, second run, project folder moved, Docker not running, Windows
     containers, docker missing, wrong folder, build failure, no `docker compose`, a broken tool,
     and each option. It checks the exit code, the messages, the docker calls and the profile file.
-- **PowerShell on Windows**: both test scripts in Windows PowerShell 5.1 and in PowerShell 7 on a
-  Windows runner, with a fake `docker.exe`. Windows runners cannot run Linux containers, so this
+  - `tests/Test-Uninstall.ps1` does the same for `uninstall.ps1`, and also runs `setup.ps1` first
+    to prove the profile comes back byte for byte as it was. It covers odd profile lines, a locked
+    profile, wrappers loaded in the session, containers that will not go, a missing or stopped
+    Docker, and each option including the question before the volume is deleted.
+- **PowerShell on Windows**: all three test scripts in Windows PowerShell 5.1 and in PowerShell 7 on
+  a Windows runner, with a fake `docker.exe`. Windows runners cannot run Linux containers, so this
   covers the PowerShell side only: 5.1 syntax, parameter binding, native argument passing and
-  Windows paths.
+  Windows paths. The runner is thrown away after the job, so it is also where the real default
+  profile folders of both PowerShell editions are tested (and put back afterwards).
 - **Build the image and test it** (Linux): a real `docker build`, then
   - `tests/smoke.sh` runs inside the image: every tool starts and reports the version pinned in
     the Dockerfile, the entrypoint extends `NO_PROXY`, the Terraform plugin cache is set up.
@@ -262,14 +311,19 @@ latest result). It runs three jobs:
     a dead corporate proxy cannot swallow the host traffic.
   - `setup.ps1` runs for real against the Docker engine of the runner (build, profile, every tool
     in its own container), and then once more to prove a second run changes nothing.
+  - `uninstall.ps1` runs for real against the same engine, with a container still running from
+    the image and both volumes present: it stops the container and takes the profile line out,
+    keeps the image and the logins, and then with `-RemoveImage -RemoveVolume -Force` deletes them.
 
-Run the PowerShell tests on your own machine (no Docker needed):
+Run the PowerShell tests on your own machine (no Docker needed, and your own profile is not touched):
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File tests\Test-Devtools.ps1   # Windows PowerShell 5.1
 powershell -NoProfile -ExecutionPolicy Bypass -File tests\Test-Setup.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File tests\Test-Uninstall.ps1
 pwsh -NoProfile -File tests/Test-Devtools.ps1                                 # PowerShell 7, any OS
 pwsh -NoProfile -File tests/Test-Setup.ps1
+pwsh -NoProfile -File tests/Test-Uninstall.ps1
 ```
 
 The image tests need Linux, macOS or WSL with Docker:
@@ -344,11 +398,12 @@ devtool/
 ├─ docker-compose.yml    # build + persistent volume + dev service
 ├─ .env.example          # versions, proxy, repos path (copy to .env)
 ├─ setup.ps1             # one command: check Docker, build, wire the profile, verify every tool
+├─ uninstall.ps1         # the undo: stop the containers, remove the wrappers (image and logins only on request)
 ├─ Devtools.psm1         # PowerShell wrappers (az/kubectl/terraform/... + dev + Import-DockerDesktopKube)
 ├─ scripts/
 │  ├─ devtools-entrypoint.sh         # keeps Docker Desktop host traffic off the proxy
 │  └─ import-docker-desktop-kube.sh  # copies the docker-desktop kube context into the toolbox
-├─ tests/                # smoke test, importer end-to-end test, PowerShell tests (wrappers, setup.ps1)
+├─ tests/                # smoke test, importer end-to-end test, PowerShell tests (wrappers, setup.ps1, uninstall.ps1)
 ├─ .github/workflows/    # CI: lint, build the image, run the tests above
 ├─ certs/                # drop corporate root CA here (optional)
 └─ repos/                # default mount point if REPOS_ROOT is unset

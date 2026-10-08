@@ -52,11 +52,17 @@ jobs:
         if: ${{ !cancelled() }}
         run: pwsh -NoProfile -File tests/Test-Setup.ps1 2>&1 | tee "$RUNNER_TEMP/setup-tests.log"
 
+      - name: uninstall.ps1 tests (fake docker)
+        id: uninstall
+        if: ${{ !cancelled() }}
+        run: pwsh -NoProfile -File tests/Test-Uninstall.ps1 2>&1 | tee "$RUNNER_TEMP/uninstall-tests.log"
+
       - name: Report results as annotations
         if: always()
         run: |
           tests/ci-annotate.sh "PowerShell wrapper tests" "${{ steps.pwsh.outcome }}" "$RUNNER_TEMP/pwsh.log"
           tests/ci-annotate.sh "setup.ps1 tests" "${{ steps.setup.outcome }}" "$RUNNER_TEMP/setup-tests.log" '^(PowerShell|--|FAIL|      |ALL|[0-9]+ SETUP)'
+          tests/ci-annotate.sh "uninstall.ps1 tests" "${{ steps.uninstall.outcome }}" "$RUNNER_TEMP/uninstall-tests.log" '^(PowerShell|--|FAIL|SKIP|      |ALL|[0-9]+ UNINSTALL)'
 
   windows:
     # The wrappers are meant for Windows, where the default shell is Windows PowerShell 5.1.
@@ -82,11 +88,17 @@ jobs:
         if: ${{ !cancelled() }}
         run: ${{ matrix.ps }} -NoProfile -ExecutionPolicy Bypass -File tests/Test-Setup.ps1 2>&1 | tee "$RUNNER_TEMP/setup-tests.log"
 
+      - name: uninstall.ps1 tests (fake docker.exe)
+        id: uninstall
+        if: ${{ !cancelled() }}
+        run: ${{ matrix.ps }} -NoProfile -ExecutionPolicy Bypass -File tests/Test-Uninstall.ps1 2>&1 | tee "$RUNNER_TEMP/uninstall-tests.log"
+
       - name: Report results as annotations
         if: always()
         run: |
           tests/ci-annotate.sh "wrapper tests on Windows (${{ matrix.ps }})" "${{ steps.pwsh.outcome }}" "$RUNNER_TEMP/pwsh.log"
           tests/ci-annotate.sh "setup.ps1 tests on Windows (${{ matrix.ps }})" "${{ steps.setup.outcome }}" "$RUNNER_TEMP/setup-tests.log" '^(PowerShell|--|FAIL|      |ALL|[0-9]+ SETUP)'
+          tests/ci-annotate.sh "uninstall.ps1 tests on Windows (${{ matrix.ps }})" "${{ steps.uninstall.outcome }}" "$RUNNER_TEMP/uninstall-tests.log" '^(PowerShell|--|FAIL|SKIP|      |ALL|[0-9]+ UNINSTALL)'
 
   image:
     name: Build the image and test it
@@ -130,6 +142,39 @@ jobs:
           pwsh -NoProfile -File setup.ps1 -NoPrompt -SkipBuild -SkipVerify -ProfilePath "$profile" 2>&1 | tee -a "$RUNNER_TEMP/setup-real.log"
           test "$(grep -c "^Import-Module '.*Devtools.psm1' -Force$" "$profile")" = 1
 
+      - name: Uninstall (uninstall.ps1 against the real Docker engine)
+        id: uninstall
+        run: |
+          # The state a real user ends up in: the profile line the step above wrote, a container
+          # still running from the image, the volume the wrappers use (the setup step ran every tool
+          # through them) and the volume that `docker compose run` creates.
+          profile="$RUNNER_TEMP/profile.ps1"
+          log="$RUNNER_TEMP/uninstall-real.log"
+          : > "$log"
+          note() { echo "# $*" | tee -a "$log"; }
+          volumes() { docker volume ls --format '{{.Name}}' | grep -E '^devtools(-home|_devtools-home)$' | sort | tr '\n' ' '; }
+          running() { docker ps -aq --filter ancestor=devtools:latest | wc -l; }
+          docker run -d --name toolbox-left-running devtools:latest sleep 600
+          docker compose run --rm -T dev true
+          note "before: $(running) container(s), volumes: $(volumes), compose network: $(docker network ls --format '{{.Name}}' | grep -c '^devtools_default$' || true)"
+          test "$(running)" = 1
+          test "$(volumes)" = "devtools-home devtools_devtools-home "
+
+          # Default run: the container and the wrappers go; the image and the logins stay.
+          pwsh -NoProfile -File uninstall.ps1 -NoPrompt -ProfilePath "$profile" 2>&1 | tee -a "$log"
+          note "after the default run: $(running) container(s), volumes: $(volumes), image: $(docker image ls -q devtools:latest | wc -l), profile lines: $(grep -c 'Devtools.psm1' "$profile" || true), compose network: $(docker network ls --format '{{.Name}}' | grep -c '^devtools_default$' || true)"
+          test "$(running)" = 0
+          test "$(grep -c 'Devtools.psm1' "$profile" || true)" = 0
+          test "$(docker network ls --format '{{.Name}}' | grep -c '^devtools_default$' || true)" = 0
+          test -n "$(docker image ls -q devtools:latest)"
+          test "$(volumes)" = "devtools-home devtools_devtools-home "
+
+          # Again, now deleting the image and both volumes. Also proves that a re-run is safe.
+          pwsh -NoProfile -File uninstall.ps1 -NoPrompt -RemoveImage -RemoveVolume -Force -ProfilePath "$profile" 2>&1 | tee -a "$log"
+          note "after -RemoveImage -RemoveVolume: image: $(docker image ls -q devtools:latest | wc -l), volumes: $(volumes)"
+          test -z "$(docker image ls -q devtools:latest)"
+          test -z "$(volumes)"
+
       - name: Report results as annotations
         if: always()
         run: |
@@ -137,6 +182,7 @@ jobs:
           tests/ci-annotate.sh "smoke test" "${{ steps.smoke.outcome }}" "$RUNNER_TEMP/smoke.log" '^(PASS|FAIL|RESULT|---)'
           tests/ci-annotate.sh "importer end to end" "${{ steps.e2e.outcome }}" "$RUNNER_TEMP/e2e.log" '^(PASS|FAIL|RESULT|==|\[setup\]|fake API|PKI|      \|)'
           tests/ci-annotate.sh "setup.ps1 on real Docker" "${{ steps.setup.outcome }}" "$RUNNER_TEMP/setup-real.log" '^(==|  OK|  WARN|  FAIL|All set|DevOps toolbox)'
+          tests/ci-annotate.sh "uninstall.ps1 on real Docker" "${{ steps.uninstall.outcome }}" "$RUNNER_TEMP/uninstall-real.log" '^(==|  OK|  WARN|  FAIL|Done|DevOps toolbox|#)'
 
       - name: Publish results to the job summary
         if: always()
@@ -153,5 +199,9 @@ jobs:
             echo '## setup.ps1 on the real Docker engine'
             echo '```'
             cat "$RUNNER_TEMP/setup-real.log" 2>/dev/null || echo 'did not run'
+            echo '```'
+            echo '## uninstall.ps1 on the real Docker engine'
+            echo '```'
+            cat "$RUNNER_TEMP/uninstall-real.log" 2>/dev/null || echo 'did not run'
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
