@@ -102,13 +102,22 @@ class Term:
         return seen()
 
     def close(self):
+        """Ask the shell to exit and wait for it. Killing a `docker run -it` client does not stop
+        the container, so give it time to end by itself before falling back to the kill."""
         try:
             self.send("\x03\x15exit\r")
-            self.pump(0.5)
+            end = time.time() + 20
+            while time.time() < end and self.proc.poll() is None:
+                self.pump(0.2)
         finally:
+            if self.proc.poll() is None:
+                try:
+                    self.proc.kill()
+                except OSError:
+                    pass
             try:
-                self.proc.kill()
-            except OSError:
+                self.proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
                 pass
             os.close(self.fd)
 

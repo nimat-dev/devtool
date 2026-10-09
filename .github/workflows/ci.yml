@@ -188,6 +188,14 @@ jobs:
           note() { echo "# $*" | tee -a "$log"; }
           volumes() { docker volume ls --format '{{.Name}}' | grep -E '^devtools(-home|_devtools-home)$' | sort | tr '\n' ' '; }
           running() { docker ps -aq --filter ancestor=devtools:latest | wc -l; }
+          # Start from a clean slate: say what an earlier step left behind (the terminal tests start
+          # shells in containers), then remove it so the counts below are about this step only.
+          stray=$(docker ps -aq --filter ancestor=devtools:latest)
+          if [ -n "$stray" ]; then
+            note "left by earlier steps: $(docker ps -a --filter ancestor=devtools:latest --format '{{.ID}} {{.Image}} {{.Command}} {{.Status}}' | tr '\n' ';')"
+            # shellcheck disable=SC2086
+            docker rm -f $stray > /dev/null
+          fi
           docker run -d --name toolbox-left-running devtools:latest sleep 600
           docker compose run --rm -T dev true
           note "before: $(running) container(s), volumes: $(volumes), compose network: $(docker network ls --format '{{.Name}}' | grep -c '^devtools_default$' || true)"
