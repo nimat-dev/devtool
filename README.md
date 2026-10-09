@@ -6,7 +6,8 @@ One Docker image with every senior-DevOps CLI baked in, plus PowerShell wrappers
 so `az`, `kubectl`, `terraform`, `flux`, `helm`, `kustomize` and `azd` run inside
 the container but feel local. Nothing to install on the host except Docker Desktop,
 which you already have. Credentials and config persist in a named volume, so you
-log in once.
+log in once. Short commands (`k`, `kgp`, `tfp`, `azl` ...), grey suggestions from your
+history and Tab completion come with it, in PowerShell and in the toolbox shell.
 
 **Tools included:** Azure CLI, azd, kubectl, kubelogin, Helm, Kustomize, Terraform,
 Flux CLI, AWS CLI v2, GitHub CLI (gh), kubectx/kubens, plus jq, yq, git, ssh, make.
@@ -34,9 +35,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\setup.ps1
 3. builds the image (`docker compose build`)
 4. adds the `Import-Module` line to your PowerShell profile (a line left over from a moved
    folder is updated, and a `.bak` copy of the profile is saved first)
-5. loads the wrappers
+5. loads the wrappers, the shortcuts, Tab completion and history suggestions (see
+   [Shortcuts, history suggestions and Tab completion](#shortcuts-history-suggestions-and-tab-completion)),
+   and makes `~/.devtools-aliases.ps1` for your own shortcuts (never overwritten)
 6. runs `az`, `kubectl`, `terraform`, `helm`, `flux`, `kustomize`, `azd`, `gh`, `kubectx` and
-   `kubens` once each, in the container, to prove they work
+   `kubens` once each, in the container, to prove they work, and checks that the image has the
+   Tab completion helper
 
 Then it offers the Azure device-code login and the Docker Desktop Kubernetes import. It is safe
 to run again whenever you like: every step checks before it changes anything.
@@ -126,7 +130,7 @@ commands (`terraform`, `kubectl apply -f`, `helm ./chart`) act on the folder
 you're in. For a full interactive shell in the toolbox:
 
 ```powershell
-dev                      # drops you into bash with the same mounts
+dev                      # drops you into zsh with the same mounts (dev bash for bash)
 ```
 
 ### AKS + kubelogin flow
@@ -139,6 +143,125 @@ kubectl get nodes        # kubelogin handles the AAD token automatically
 Both `az` and `kubectl` share the same `/root` volume, so the kubeconfig written
 by `get-credentials` and the AAD token cache from `kubelogin` are right there for
 every later `kubectl` call.
+
+## Shortcuts, history suggestions and Tab completion
+
+All of this loads with the module, so `setup.ps1` turns it on and `uninstall.ps1` turns it off.
+The parts that run inside the toolbox come with the image, which `setup.ps1` rebuilds.
+
+### Shortcuts
+
+`Get-DevToolsAlias` lists them. Whatever you type after a shortcut is added at the end, so
+`kgp -n kube-system` runs `kubectl get pods -n kube-system`.
+
+| Azure | Runs |
+| --- | --- |
+| `azl` | `az login --use-device-code` |
+| `azwho` | `az account show -o table` |
+| `azsubs` | `az account list -o table` |
+| `azsub NAME` | `az account set --subscription NAME` |
+| `azrg` | `az group list -o table` |
+| `azres RG` | `az resource list -o table -g RG` |
+| `acrls REGISTRY` | `az acr repository list -o table -n REGISTRY` |
+
+| AKS and kubectl | Runs |
+| --- | --- |
+| `aksl` | `az aks list -o table` |
+| `k` | `kubectl` |
+| `kx`, `kn` | `kubectx`, `kubens` |
+| `kgp`, `kgpa` | `kubectl get pods`, `kubectl get pods -A` |
+| `kgn`, `kgd`, `kgs` | `kubectl get nodes`, `deployments`, `services` |
+| `kd` | `kubectl describe` |
+| `kl`, `klf` | `kubectl logs`, `kubectl logs -f` |
+| `kex POD -- sh` | `kubectl exec -it POD -- sh` |
+| `kaf FILE` | `kubectl apply -f FILE` |
+| `krr deploy/NAME` | `kubectl rollout restart deploy/NAME` |
+| `ktop` | `kubectl top pods` |
+
+| Terraform | Runs |
+| --- | --- |
+| `tf` | `terraform` |
+| `tfi`, `tfv`, `tff` | `terraform init`, `validate`, `fmt -recursive` |
+| `tfp` | `terraform plan -out=tfplan` |
+| `tfa` | `terraform apply tfplan` (applies exactly the plan you just read) |
+| `tfo` | `terraform output` |
+| `tfs`, `tfss ADDRESS` | `terraform state list`, `state show ADDRESS` |
+| `tfw`, `tfws NAME` | `terraform workspace list`, `workspace select NAME` |
+| `tfdestroy` | `terraform destroy` (it still asks you to confirm) |
+
+There is no `-auto-approve` shortcut, on purpose.
+
+Three AKS helpers take the resource group and the cluster name, either typed (`aksc my-rg my-cluster`)
+or from two variables that you set once. They stay on your laptop and are not in this repository:
+
+```powershell
+$env:AKS_RG = 'my-resource-group'; $env:AKS_NAME = 'my-cluster'
+```
+
+| Helper | Runs |
+| --- | --- |
+| `aksc` | `az aks get-credentials -g RG -n NAME --overwrite-existing` |
+| `aksup` | `az aks get-upgrades -g RG -n NAME -o table` |
+| `aksx kubectl get nodes` | `az aks command invoke -g RG -n NAME --command "kubectl get nodes"`, which reaches a private cluster through Azure |
+
+PowerShell removes a bare `--` before a function sees it. The wrappers put it back where you typed
+it, so `kubectl exec -it web -- ls -la` and `kex web -- sh` work as written.
+
+### Your own shortcuts
+
+`setup.ps1` makes `~/.devtools-aliases.ps1` once and never overwrites it. It is read after the
+built-in shortcuts, so what you define there wins:
+
+```powershell
+function kgj  { kubectl get pods -o json @args }
+function tfpl { terraform plan -out=tfplan @args }
+$env:AKS_RG   = 'my-resource-group'
+$env:AKS_NAME = 'my-cluster'
+```
+
+A mistake in the file shows as a warning and the toolbox still loads. `Get-DevToolsAlias` marks the
+shortcuts that are yours. Keep the file somewhere else by setting `$env:DEVTOOLS_ALIASES` before the
+import. Inside the toolbox shell the same list exists as shell aliases, and your own go in
+`~/.devtools-aliases.sh` (that is on the volume, so it stays).
+
+### History suggestions
+
+As you type, PowerShell shows the rest of an earlier command in grey; the Right arrow accepts it.
+That needs PSReadLine 2.1 or newer, which PowerShell 7 has. Windows PowerShell 5.1 ships 2.0, which
+cannot show grey text, so there the Up and Down arrows search your history for what you have typed
+instead. To get the grey text on 5.1 as well, update PSReadLine once (no admin rights; it needs the
+PowerShell Gallery, which some companies block), then open a new window:
+
+```powershell
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+Install-Module PSReadLine -Scope CurrentUser -Force -SkipPublisherCheck
+```
+
+Tab opens a menu of the choices; arrows pick, Enter accepts. Only defaults are replaced: a Tab
+binding or a suggestion source you set yourself is left alone, and everything is handed back when
+the module is removed. `$env:DEVTOOLS_NO_READLINE = '1'` before the import skips all of it.
+
+### Tab completion
+
+`az`, `kubectl`, `terraform`, `helm`, `flux` (and `kustomize`, `azd`, `gh`) complete their
+commands and flags, and so do the shortcuts for them: `kgp -n <Tab>`, `tf wor<Tab>`. In PowerShell
+the real tool answers from a short-lived container, so a Tab press takes about a second (a few for
+`az`). Names that live in a system, such as pods or resource groups, are offered when the tool can
+reach it and you are logged in. If Docker is not running, the image is older than this feature or
+the tool takes too long, nothing is offered and file names complete as usual.
+
+### The toolbox shell
+
+`dev` (and `docker compose run --rm dev`) opens zsh: grey suggestions from your history, colours
+(green when the command exists, red when it does not), a Tab menu, and the shortcuts above.
+`dev bash` opens bash with the same shortcuts and completion. The history is kept in the volume
+(`~/.zsh_history`), so it survives between sessions.
+
+| Variable | Effect |
+| --- | --- |
+| `DEVTOOLS_ALIASES` | the file for your own shortcuts (default `~/.devtools-aliases.ps1`) |
+| `DEVTOOLS_NO_READLINE` | `1` leaves PSReadLine alone |
+| `AKS_RG`, `AKS_NAME` | your cluster, for `aksc`, `aksup`, `aksx`; `dev` hands them to the shell inside |
 
 ## Use Docker Desktop's Kubernetes (local cluster)
 
@@ -206,7 +329,7 @@ is a quick rebuild. To upgrade a pinned tool, bump its version in `.env`
 docker compose run --rm dev        # one-off shell
 # or keep it up and exec in repeatedly:
 docker compose up -d dev
-docker compose exec dev bash
+docker compose exec dev zsh
 ```
 
 Set `REPOS_ROOT` in `.env` to an absolute path (e.g. `C:/Users/you/repos`) to
@@ -256,8 +379,11 @@ instead, then `Remove-Module Devtools` in the window you were using. It does thi
 4. only when you ask: deletes the image and your saved logins
 
 The image takes minutes to build and the volume holds your Azure, GitHub and Kubernetes logins,
-so both are **kept** unless you ask. Your project folder and `.env` are never touched. It works
-with Docker Desktop stopped (the profile and the window are cleaned first) and is safe to run again.
+so both are **kept** unless you ask. Your project folder and `.env` are never touched, and neither
+is your own shortcuts file (`~/.devtools-aliases.ps1`): it holds what you wrote, so the script
+only tells you where it is. With the profile line gone, new windows have no shortcuts, Tab
+completion or history settings from the toolbox. It works with Docker Desktop stopped (the profile
+and the window are cleaned first) and is safe to run again.
 
 | Option | What it does |
 | --- | --- |
@@ -287,7 +413,9 @@ latest result). It runs three jobs:
   `docker`:
   - `tests/Test-Devtools.ps1` runs the real `Devtools.psm1` and checks the exact `docker run`
     line each wrapper produces (mounts, working directory, `-out` / `-o` pass-through, exit
-    codes, env overrides).
+    codes, env overrides), every shortcut against its table, the bare `--` that PowerShell
+    removes, your own shortcuts file (including a broken one), Tab completion against canned
+    answers, and what is done to PSReadLine (new and old versions) and handed back.
   - `tests/Test-Setup.ps1` runs `setup.ps1` in a scratch copy of the project, once per situation
     it has to handle: first run, second run, project folder moved, Docker not running, Windows
     containers, docker missing, wrong folder, build failure, no `docker compose`, a broken tool,
@@ -296,6 +424,10 @@ latest result). It runs three jobs:
     to prove the profile comes back byte for byte as it was. It covers odd profile lines, a locked
     profile, wrappers loaded in the session, containers that will not go, a missing or stopped
     Docker, and each option including the question before the volume is deleted.
+  - `tests/pty_shell_test.py pwsh` starts an interactive PowerShell 7 in a pseudo terminal with the
+    profile line `setup.ps1` writes, then types like a person: the Tab menu, Tab completion
+    through a fake docker, grey suggestions from the history, `kex pod -- ls -la`, and the keys
+    coming back when the module is removed.
 - **PowerShell on Windows**: all three test scripts in Windows PowerShell 5.1 and in PowerShell 7 on
   a Windows runner, with a fake `docker.exe`. Windows runners cannot run Linux containers, so this
   covers the PowerShell side only: 5.1 syntax, parameter binding, native argument passing and
@@ -303,7 +435,12 @@ latest result). It runs three jobs:
   profile folders of both PowerShell editions are tested (and put back afterwards).
 - **Build the image and test it** (Linux): a real `docker build`, then
   - `tests/smoke.sh` runs inside the image: every tool starts and reports the version pinned in
-    the Dockerfile, the entrypoint extends `NO_PROXY`, the Terraform plugin cache is set up.
+    the Dockerfile, the entrypoint extends `NO_PROXY`, the Terraform plugin cache is set up, and
+    the interactive shells are in place (zsh and its plugins, the completion scripts, the
+    aliases, and the answers `devtools-complete` gives for each tool).
+  - `tests/pty_shell_test.py` types into zsh and into bash inside the image, in a pseudo
+    terminal: the aliases, the grey suggestion, the colours and Tab completion for flux, gh,
+    terraform, kubectl, helm and az.
   - `tests/e2e-import.sh` starts a fake Kubernetes API on the host with a certificate valid only
     for `kubernetes.docker.internal`, then checks that the container reaches it with TLS verified,
     that only the `docker-desktop` context is imported (a second context's secret never reaches
@@ -332,11 +469,16 @@ The image tests need Linux, macOS or WSL with Docker:
 docker build -t devtools:ci .
 docker run --rm -v "$PWD/tests:/tests:ro" devtools:ci bash /tests/smoke.sh
 tests/e2e-import.sh devtools:ci                                    # needs openssl and python3
+python3 tests/pty_shell_test.py zsh --full -- docker run --rm -it devtools:ci zsh
+python3 tests/pty_shell_test.py bash --full -- docker run --rm -it devtools:ci bash
+python3 tests/pty_shell_test.py pwsh -- pwsh -NoLogo                 # PowerShell 7 on Linux or macOS
 ```
 
-What CI cannot prove: how your corporate proxy and TLS inspection behave, and Docker Desktop's
-real Kubernetes (the end-to-end test uses a fake API server on Linux). Run
-`Import-DockerDesktopKube` on the laptop for that last mile.
+What CI cannot prove: how your corporate proxy and TLS inspection behave, Docker Desktop's
+real Kubernetes (the end-to-end test uses a fake API server on Linux), and how Windows PowerShell
+5.1 behaves at a live prompt (CI has no console there, so the grey suggestions, the Tab menu and
+the Up and Down search are tested with PowerShell 7 and with stand-ins for PSReadLine 2.0). Run
+`Import-DockerDesktopKube` on the laptop for the Kubernetes last mile.
 
 ---
 
@@ -371,6 +513,21 @@ naturally, e.g. `kubectl patch deploy web -p '{"spec":{"replicas":3}}'`. Windows
 normally strips the double quotes from native command arguments; the wrappers escape them for
 you, so don't add backslashes. CI checks this in both Windows PowerShell 5.1 and PowerShell 7.
 
+**Tab does nothing, or is slow, in PowerShell.** Each Tab asks a short-lived container, so it takes
+about a second, and the first one after Docker Desktop starts can take longer. Nothing at all means
+the answer was empty or late: check that Docker Desktop is running and that the image is current
+(`.\setup.ps1` rebuilds it; `Get-DevToolsInfo` shows which image the wrappers use). Names that need
+a login or a cluster (pods, resource groups) only complete when the tool can reach them.
+
+**No grey suggestions in Windows PowerShell 5.1.** It ships PSReadLine 2.0, which cannot draw them.
+The Up and Down arrows search the history instead; to get the grey text, update PSReadLine as shown
+under [History suggestions](#history-suggestions). The shell inside the toolbox (`dev`) has the grey
+suggestions either way.
+
+**A warning about your shortcuts file when PowerShell starts.** The module could not read
+`~/.devtools-aliases.ps1` (or the file named by `DEVTOOLS_ALIASES`) and went on without the rest of
+it. The warning names the file and the error; fix that line, or move the file away.
+
 **`az login` opens nothing / hangs.** Use `az login --use-device-code`. The
 container has no browser, so the normal interactive login can't work.
 
@@ -399,11 +556,14 @@ devtool/
 ├─ .env.example          # versions, proxy, repos path (copy to .env)
 ├─ setup.ps1             # one command: check Docker, build, wire the profile, verify every tool
 ├─ uninstall.ps1         # the undo: stop the containers, remove the wrappers (image and logins only on request)
-├─ Devtools.psm1         # PowerShell wrappers (az/kubectl/terraform/... + dev + Import-DockerDesktopKube)
+├─ Devtools.psm1         # PowerShell wrappers (az/kubectl/terraform/... + dev + Import-DockerDesktopKube),
+│                        # shortcuts, Tab completion, history suggestions
 ├─ scripts/
 │  ├─ devtools-entrypoint.sh         # keeps Docker Desktop host traffic off the proxy
-│  └─ import-docker-desktop-kube.sh  # copies the docker-desktop kube context into the toolbox
-├─ tests/                # smoke test, importer end-to-end test, PowerShell tests (wrappers, setup.ps1, uninstall.ps1)
+│  ├─ import-docker-desktop-kube.sh  # copies the docker-desktop kube context into the toolbox
+│  ├─ devtools-complete.sh           # answers PowerShell's Tab presses with the real tool's completions
+│  └─ shell/                         # the toolbox shell: zshrc, bashrc, aliases.sh, az-completion.sh
+├─ tests/                # smoke test, importer end-to-end test, terminal (pty) tests, PowerShell tests
 ├─ .github/workflows/    # CI: lint, build the image, run the tests above
 ├─ certs/                # drop corporate root CA here (optional)
 └─ repos/                # default mount point if REPOS_ROOT is unset

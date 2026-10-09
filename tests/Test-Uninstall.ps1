@@ -24,7 +24,9 @@ $empty  = Join-Path $base 'empty'                                  # a PATH that
 $prof   = Join-Path (Join-Path $base 'profile dir') 'profile.ps1'
 $log    = Join-Path $base 'docker.log'
 $psFile = Join-Path $base 'containers.txt'                         # the containers the fake docker "has"
+$aliasesFile = Join-Path $base 'my shortcuts.ps1'                  # where setup.ps1 puts the file for your own shortcuts
 New-Item -ItemType Directory -Force -Path $base, $empty | Out-Null
+$env:DEVTOOLS_ALIASES = $aliasesFile    # setup.ps1 and uninstall.ps1 both honour it; the real home folder stays untouched
 
 . (Join-Path $PSScriptRoot 'FakeDocker.ps1')
 $fakebin = Install-FakeDocker
@@ -53,7 +55,7 @@ function Check([string] $Name, [bool] $Condition, [string] $Detail = '') {
 function Reset-Project {
     Remove-Item -LiteralPath $proj -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath (Split-Path -Parent $prof) -Recurse -Force -ErrorAction SilentlyContinue
-    Remove-Item -LiteralPath $log, $psFile -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $log, $psFile, $aliasesFile -Force -ErrorAction SilentlyContinue
     New-Item -ItemType Directory -Force -Path (Join-Path $proj 'certs') | Out-Null
     foreach ($f in 'setup.ps1', 'uninstall.ps1', 'Devtools.psm1', 'Dockerfile', 'docker-compose.yml', '.env.example') {
         Copy-Item -LiteralPath (Join-Path $root $f) -Destination $proj
@@ -143,6 +145,11 @@ foreach ($p in @($ast.ParamBlock.Parameters | ForEach-Object { $_.Name.VariableP
     Check "parameter -$p is documented in the help comment" ($help -match "(?m)^\.PARAMETER\s+$p\b")
 }
 Check 'setup.ps1 and uninstall.ps1 agree on the comment line setup writes into the profile' ((Read-Text (Join-Path $root 'setup.ps1')).Contains($marker) -and $help.Contains($marker))
+# The module and uninstall.ps1 each name the default home of the file for your own shortcuts; they must agree.
+$moduleText = Read-Text (Join-Path $root 'Devtools.psm1')
+$defaultPath = "Join-Path `$HOME '.devtools-aliases.ps1'"
+Check 'uninstall.ps1 and Devtools.psm1 agree on where your shortcuts file lives by default' `
+    ($help.Contains($defaultPath) -and $moduleText.Contains($defaultPath) -and $help.Contains('$env:DEVTOOLS_ALIASES') -and $moduleText.Contains('$env:DEVTOOLS_ALIASES'))
 
 # ---- 1. undo a real setup: the profile comes back exactly as it was ------------------------------
 Write-Host ''
@@ -154,10 +161,15 @@ $originalB64 = Get-B64 $prof
 $r = Invoke-Setup @('-SkipBuild', '-SkipVerify', '-ProfilePath', $prof)
 Check 'setup.ps1 added its line (the starting point)'    (($r.Code -eq 0) -and (@(Get-ImportLines).Count -eq 1) -and ((Get-B64 $prof) -cne $originalB64)) (Show $r)
 $afterSetup = Read-Text $prof
+Check 'setup.ps1 made the file for your own shortcuts (the starting point)' (Test-Path -LiteralPath $aliasesFile) (Show $r)
+[IO.File]::AppendAllText($aliasesFile, "`r`nfunction mine { 'mine' }`r`n")
+$aliasesB64 = Get-B64 $aliasesFile
 Remove-Item -LiteralPath $log -Force -ErrorAction SilentlyContinue
 Set-Containers 'abc123def456', 'fff111eee222'
 $r = Invoke-Uninstall @('-ProfilePath', $prof)
 $d = Show $r
+Check 'leaves your shortcuts file exactly as it is'    ((Test-Path -LiteralPath $aliasesFile) -and ((Get-B64 $aliasesFile) -ceq $aliasesB64)) $d
+Check 'says it kept the file, and where it is'          (($r.Text -match 'Your own shortcuts file was kept') -and $r.Text.Contains($aliasesFile)) $d
 Check 'exits 0'                                         ($r.Code -eq 0) $d
 Check 'prints all four steps in order'                  ($r.Text -match '(?s)1/4.*2/4.*3/4.*4/4') $d
 Check 'the profile is byte for byte what it was before setup' ((Get-B64 $prof) -ceq $originalB64) $d
@@ -296,6 +308,29 @@ $r = Invoke-Uninstall @('-ProfilePath', $prof)
 $d = Show $r
 Check 'no profile file: exits 0'                        ($r.Code -eq 0) $d
 Check 'no profile file: says so and creates nothing'    (($r.Text -match 'no profile file exists') -and -not (Test-Path -LiteralPath $prof)) $d
+Check 'no shortcuts file: says nothing about one and makes none' ((-not ($r.Text -match 'shortcuts file')) -and -not (Test-Path -LiteralPath $aliasesFile)) $d
+
+Write-Host ''
+Write-Host '-- your shortcuts file, found at its default place'
+# With DEVTOOLS_ALIASES not set the file is ~/.devtools-aliases.ps1. That only moves with HOME where
+# this PowerShell takes its home folder from HOME / USERPROFILE (Linux, macOS); elsewhere it is skipped.
+$home2 = Join-Path $base 'home2'
+New-Item -ItemType Directory -Force -Path $home2 | Out-Null
+$homeEnv = @{ HOME = $home2; USERPROFILE = $home2; DEVTOOLS_ALIASES = '' }
+$probeHome = ("$((Invoke-Ps @('-Command', '$HOME') $homeEnv).Text)" -split "`n" | Where-Object { $_.Trim().Length -gt 0 } | Select-Object -Last 1)
+if ("$probeHome".Trim() -ieq $home2) {
+    Reset-Project
+    $defaultFile = Join-Path $home2 '.devtools-aliases.ps1'
+    [IO.File]::WriteAllText($defaultFile, "function mine { 'mine' }`r`n")
+    $defaultB64 = Get-B64 $defaultFile
+    $r = Invoke-Uninstall @('-SkipProfile') $homeEnv
+    $d = Show $r
+    Check 'exits 0'                                     ($r.Code -eq 0) $d
+    Check 'finds and keeps ~/.devtools-aliases.ps1'     (($r.Text.Contains($defaultFile)) -and ((Get-B64 $defaultFile) -ceq $defaultB64)) $d
+    Remove-Item -LiteralPath $defaultFile -Force
+} else {
+    Write-Host "SKIP  default shortcuts file: this PowerShell ignores HOME / USERPROFILE here ($probeHome)"
+}
 
 Write-Host ''
 Write-Host '-- the profile is locked by another program'

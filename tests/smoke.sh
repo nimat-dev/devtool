@@ -83,7 +83,7 @@ else
   bad "working directory is $(pwd), expected /work"
 fi
 
-for f in import-docker-desktop-kube devtools-entrypoint; do
+for f in import-docker-desktop-kube devtools-entrypoint devtools-complete; do
   p=/usr/local/bin/$f
   if [ -x "$p" ] && ! grep -q $'\r' "$p"; then
     ok "$f is installed, executable and has LF line endings"
@@ -99,6 +99,92 @@ if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -q 'no host kubeconfig'; then
 else
   bad "import-docker-desktop-kube without a kubeconfig: rc=$rc output='$out'"
 fi
+
+# ---------------------------------------------------------------------------------------------
+# The interactive shell (dev): zsh with suggestions and completion, bash with the same aliases.
+# tests/pty_shell_test.py types into a real terminal; this checks that everything is in place.
+# ---------------------------------------------------------------------------------------------
+echo
+echo "--- interactive shell ---"
+
+for f in /etc/devtools/aliases.sh /etc/devtools/az-completion.sh /etc/devtools/bashrc /etc/devtools/zdot/.zshrc; do
+  if [ -r "$f" ] && ! grep -q $'\r' "$f"; then
+    ok "$f is installed with LF line endings"
+  else
+    bad "$f is missing or has CRLF line endings"
+  fi
+done
+
+if command -v zsh > /dev/null 2>&1 && [ "${ZDOTDIR:-}" = /etc/devtools/zdot ] && [ -f /etc/devtools/zdot/.zcompdump ]; then
+  ok "zsh is installed, reads /etc/devtools/zdot and has a completion cache"
+else
+  bad "zsh, ZDOTDIR (='${ZDOTDIR:-}') or the completion cache /etc/devtools/zdot/.zcompdump is missing"
+fi
+for plugin in zsh-autosuggestions/zsh-autosuggestions.zsh zsh-syntax-highlighting/zsh-syntax-highlighting.zsh; do
+  if [ -r "/usr/share/$plugin" ]; then ok "/usr/share/$plugin is installed"; else bad "/usr/share/$plugin is missing"; fi
+done
+
+if grep -q '/etc/devtools/bashrc' /etc/bash.bashrc; then
+  ok "/etc/bash.bashrc loads the toolbox bash settings"
+else
+  bad "/etc/bash.bashrc does not load /etc/devtools/bashrc"
+fi
+
+for t in kubectl helm flux kustomize azd gh; do
+  if [ -s "/usr/share/bash-completion/completions/$t" ] && [ -s "/usr/share/zsh/vendor-completions/_$t" ]; then
+    ok "Tab completion scripts for $t (bash and zsh)"
+  else
+    bad "Tab completion scripts for $t are missing or empty"
+  fi
+done
+
+# Starting a shell must be silent: no errors from the rc files. Without a terminal bash says
+# that it has no job control; that is not an error in the files.
+quiet() { grep -v -e 'cannot set terminal process group' -e 'no job control' || true; }
+out=$(zsh -ic true 2>&1 < /dev/null | quiet)
+if [ -z "$out" ]; then ok "zsh starts without a message"; else bad "zsh printed on start: $(printf '%s' "$out" | head -n 3 | tr '\n' ' ')"; fi
+out=$(bash -ic true 2>&1 < /dev/null | quiet)
+if [ -z "$out" ]; then ok "bash starts without a message"; else bad "bash printed on start: $(printf '%s' "$out" | head -n 3 | tr '\n' ' ')"; fi
+
+zout=$(zsh -ic 'alias kgp; whence -w aksx; print -r -- "HIST=$HISTFILE"; print -r -- "AS=${+functions[_zsh_autosuggest_start]} HL=${ZSH_HIGHLIGHT_VERSION:-none}"; print -r -- "COMPS=${+_comps[kubectl]}${+_comps[helm]}${+_comps[flux]}${+_comps[kustomize]}${+_comps[azd]}${+_comps[gh]}${+_comps[terraform]}${+_comps[az]}"' 2>&1 < /dev/null | quiet)
+case "$zout" in *"kgp='kubectl get pods'"*) ok "zsh: the alias kgp is defined" ;; *) bad "zsh: alias kgp missing: $zout" ;; esac
+case "$zout" in *"aksx: function"*) ok "zsh: the function aksx is defined" ;; *) bad "zsh: aksx missing: $zout" ;; esac
+case "$zout" in *"HIST=/root/.zsh_history"*) ok "zsh: history is kept in /root/.zsh_history (the volume)" ;; *) bad "zsh: wrong history file: $zout" ;; esac
+case "$zout" in *"AS=1 HL="*) ;; *) bad "zsh: autosuggestions are not loaded: $zout" ;; esac
+case "$zout" in *"HL=none"*) bad "zsh: syntax highlighting is not loaded: $zout" ;; *"AS=1 HL="*) ok "zsh: autosuggestions and syntax highlighting are loaded" ;; esac
+case "$zout" in *"COMPS=11111111"*) ok "zsh: Tab completion is set up for kubectl helm flux kustomize azd gh terraform az" ;; *) bad "zsh: some completions are not registered: $zout" ;; esac
+
+bout=$(bash -ic 'alias kgp; type aksx | head -n 1; complete -p k tf terraform az' 2>&1 < /dev/null | quiet)
+case "$bout" in *"kgp='kubectl get pods'"*) ok "bash: the alias kgp is defined" ;; *) bad "bash: alias kgp missing: $bout" ;; esac
+case "$bout" in *"aksx is a function"*) ok "bash: the function aksx is defined" ;; *) bad "bash: aksx missing: $bout" ;; esac
+case "$bout" in *"__start_kubectl k"*) ok "bash: k completes like kubectl" ;; *) bad "bash: k has no completion: $bout" ;; esac
+case "$bout" in *"-C /usr/bin/terraform tf"*"-C /usr/bin/terraform terraform"*|*"-C /usr/bin/terraform terraform"*"-C /usr/bin/terraform tf"*) ok "bash: terraform and tf complete through terraform itself" ;; *) bad "bash: terraform/tf have no completion: $bout" ;; esac
+case "$bout" in *"_devtools_az_complete az"*) ok "bash: az completes through argcomplete" ;; *) bad "bash: az has no completion: $bout" ;; esac
+
+# devtools-complete is what PowerShell asks on Tab: the real tool in the image answers.
+check_complete() {
+  local name=$1 want=$2 out
+  shift 2
+  out=$(devtools-complete "$@" 2>&1)
+  if printf '%s\n' "$out" | grep -qE -- "$want"; then
+    ok "devtools-complete: $name"
+  else
+    bad "devtools-complete: $name: wanted '$want', got: $(printf '%s' "$out" | head -n 3 | tr '\n' ' ')"
+  fi
+}
+check_complete "kubectl cre -> create"        '^create'     kubectl   "kubectl cre"
+check_complete "helm ins -> install"          '^install'    helm      "helm ins"
+check_complete "flux boo -> bootstrap"        '^bootstrap'  flux      "flux boo"
+check_complete "gh pr li -> list"             '^list'       gh        "gh pr li"
+check_complete "kustomize bui -> build"       '^build'      kustomize "kustomize bui"
+check_complete "azd ini -> init"              '^init'       azd       "azd ini"
+check_complete "terraform ap -> apply"        '^apply'      terraform "terraform ap"
+check_complete "az acc -> account"            '^account'    az        "az acc"
+check_complete "kubectl get pods --all-nam"   '^--all-namespaces' kubectl "kubectl get pods --all-nam"
+out=$(devtools-complete rm "rm -r" 2>&1; echo "rc=$?")
+case "$out" in "rc=0") ok "devtools-complete ignores a tool it does not know" ;; *) bad "devtools-complete rm: $out" ;; esac
+out=$(devtools-complete kubectl "kubectl nosuchcommand zzz" 2>&1; echo "rc=$?")
+case "$out" in *"rc=0") ok "devtools-complete exits 0 when there is nothing to offer" ;; *) bad "devtools-complete with no answer: $out" ;; esac
 
 echo
 echo "RESULT: $pass passed, $fail failed"

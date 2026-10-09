@@ -21,7 +21,10 @@
 
     The image takes minutes to build and the volume holds your Azure, GitHub and Kubernetes
     logins, so both are KEPT unless you pass -RemoveImage / -RemoveVolume. The project folder and
-    .env are never touched. Run setup.ps1 to put everything back.
+    .env are never touched, and neither is your own shortcuts file (~/.devtools-aliases.ps1, or
+    the file named by DEVTOOLS_ALIASES), which holds what you wrote yourself. With the profile
+    line gone, new windows have no shortcuts, Tab completion or history settings from the toolbox.
+    Run setup.ps1 to put everything back.
 
     Safe to run again at any time. It works without Docker running: the profile and this window
     are cleaned first. Only the default names are handled (image devtools:latest, volumes
@@ -52,6 +55,8 @@ Set-StrictMode -Version Latest
 $root     = if ($PSScriptRoot) { $PSScriptRoot } else { (Get-Location).ProviderPath }
 $image    = 'devtools:latest'
 $volumes  = @('devtools-home', 'devtools_devtools-home')    # the wrappers' volume, and the one docker compose makes
+# Your own shortcuts file (setup.ps1 makes it). Same default as Devtools.psm1; it is only looked at, never changed.
+$aliasesFile = if ($env:DEVTOOLS_ALIASES) { $env:DEVTOOLS_ALIASES } else { Join-Path $HOME '.devtools-aliases.ps1' }
 $problems = 0
 
 # What setup.ps1 puts in the profile. Keep these in step with setup.ps1 (the tests check it).
@@ -405,5 +410,8 @@ if (Test-OwnProcess) {
     Write-Info 'until you close them, or run this in them:  Remove-Module Devtools'
 }
 Write-Info "The project folder ($root) and your .env were not touched."
+if (Test-Path -LiteralPath $aliasesFile -PathType Leaf) {
+    Write-Info "Your own shortcuts file was kept: $aliasesFile (delete it yourself if you do not want it)"
+}
 Write-Info 'To set everything up again:  .\setup.ps1'
 exit 0

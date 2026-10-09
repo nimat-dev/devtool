@@ -12,7 +12,9 @@
     2  creates .env from .env.example (kept if it already exists)
     3  builds the image                       (docker compose build)
     4  adds the Import-Module line to your PowerShell profile
-    5  loads the wrappers in this window      (az, kubectl, terraform, ... run in the container)
+    5  loads the wrappers in this window      (az, kubectl, terraform, ... run in the container),
+       with the shortcuts (k, kgp, tfp, azl ...), Tab completion and history suggestions;
+       creates ~/.devtools-aliases.ps1 for your own shortcuts (never overwritten)
     6  verifies every tool
     then offers the Azure login and the Docker Desktop Kubernetes import.
 
@@ -113,6 +115,40 @@ function Test-OwnProcess {
     }
     return $false
 }
+
+# What the history suggestions will do in a NEW PowerShell window, given the newest PSReadLine that is
+# installed ($Version is $null when there is none). Grey suggestions need PSReadLine 2.1; Windows
+# PowerShell 5.1 ships 2.0.0, which cannot show them, and there the module makes the Up and Down
+# arrows search the history for what you have typed instead.
+function Get-ReadLineAdvice {
+    param($Version)
+    if ($null -eq $Version) {
+        return [pscustomobject]@{ Kind = 'missing'; Text = 'PSReadLine was not found, so PowerShell has no history suggestions or Tab menu here (the toolbox shell, dev, has both)' }
+    }
+    if ([version] $Version -ge [version] '2.1.0') {
+        return [pscustomobject]@{ Kind = 'suggestions'; Text = "history suggestions as you type, the Right arrow accepts (PSReadLine $Version)" }
+    }
+    return [pscustomobject]@{ Kind = 'search'; Text = "history: type the start of a command, then Up or Down arrow finds it (PSReadLine $Version cannot show grey suggestions)" }
+}
+
+# The file for your own shortcuts. Created once, never overwritten. It has a byte-order mark so that
+# Notepad keeps the encoding Windows PowerShell 5.1 expects when you add accented letters later.
+$aliasesTemplate = @'
+# Your own PowerShell shortcuts for the toolbox. setup.ps1 made this file once and never changes it.
+# It is read when the toolbox loads, after the built-in shortcuts, so what you define here wins.
+#
+# A shortcut is a function. Whatever you type after it is added at the end (that is what @args does):
+#
+#   function kgj  { kubectl get pods -o json @args }
+#   function tfpl { terraform plan -out=tfplan @args }
+#
+# Your AKS cluster (stays on this laptop; used by aksc, aksup and aksx):
+#
+#   $env:AKS_RG   = 'my-resource-group'
+#   $env:AKS_NAME = 'my-cluster'
+#
+# List every shortcut:  Get-DevToolsAlias
+'@
 
 Write-Host "DevOps toolbox setup  ($root)" -ForegroundColor Cyan
 
@@ -250,6 +286,37 @@ try {
 }
 Write-Ok 'az, kubectl, terraform, flux, helm, kustomize, azd, gh, kubectx, kubens and dev now run in the container'
 
+# Shortcuts, Tab completion and history suggestions all come with the module.
+$aliasesFile = ''
+try {
+    $builtIn = @(Get-DevToolsAlias | Where-Object { $_.Group -ne 'Yours' }).Count
+    Write-Ok "$builtIn shortcuts: k, kgp, tfp, azl, aksx ...  (Get-DevToolsAlias lists them all)"
+    $aliasesFile = "$((Get-DevToolsInfo).AliasesFile)"
+    if (Test-Path -LiteralPath $aliasesFile -PathType Leaf) {
+        Write-Ok "your own shortcuts file already exists, keeping it: $aliasesFile"
+    } else {
+        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $aliasesFile) | Out-Null
+        $text = ($aliasesTemplate -replace "`r?`n", "`r`n") + "`r`n"
+        [IO.File]::WriteAllText($aliasesFile, $text, (New-Object System.Text.UTF8Encoding $true))
+        Write-Ok "made a file for your own shortcuts: $aliasesFile"
+    }
+} catch {
+    Write-Warn "Could not prepare your shortcuts file ($aliasesFile): $($_.Exception.Message)"
+}
+Write-Ok 'Tab completion for az, kubectl, terraform, helm, flux ... (the real tool answers from the container, about a second per Tab)'
+$readLine = $null
+try {
+    $readLine = Get-Module -ListAvailable -Name PSReadLine | Sort-Object -Property Version -Descending | Select-Object -First 1
+} catch { }
+$advice = Get-ReadLineAdvice $(if ($readLine) { $readLine.Version } else { $null })
+if ($advice.Kind -eq 'missing') { Write-Warn $advice.Text } else { Write-Ok $advice.Text }
+if ($advice.Kind -ne 'suggestions') {
+    Write-Info 'For the grey suggestions, update PSReadLine once (no admin rights needed; skip this if your company blocks the PowerShell Gallery):'
+    Write-Info '    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12'
+    Write-Info '    Install-Module PSReadLine -Scope CurrentUser -Force -SkipPublisherCheck'
+    Write-Info 'then open a new window. The shell inside the toolbox (dev) has the grey suggestions either way.'
+}
+
 # ---- 6. Verify -------------------------------------------------------------------------------
 Write-Step '6/6  Verify every tool (one container per tool)'
 if ($SkipVerify) {
@@ -281,6 +348,13 @@ if ($SkipVerify) {
             Write-Fail ('{0,-10} exit code {1}  {2}' -f $name, $r.ExitCode, $text)
             $problems++
         }
+    }
+    # Tab completion in PowerShell asks the image; an image built before that feature has no helper.
+    $r = Invoke-Quiet $docker @('run', '--rm', $info.Image, 'devtools-complete')
+    if ($r.ExitCode -eq 0) {
+        Write-Ok ('{0,-10} Tab completion helper is in the image' -f 'complete')
+    } else {
+        Write-Warn "This image has no Tab completion helper yet (exit code $($r.ExitCode)). Run setup.ps1 again without -SkipBuild to rebuild it."
     }
 }
 
@@ -319,5 +393,6 @@ Write-Host 'Next:'
 if (-not $didLogin) { Write-Info 'az login --use-device-code      sign in to Azure (the token stays in the toolbox volume)' }
 if (-not $didKube)  { Write-Info 'Import-DockerDesktopKube        use Docker Desktop''s Kubernetes (enable it in Docker Desktop first)' }
 Write-Info 'kubectx, kubens, kubectl ...    work like the real tools'
-Write-Info 'dev                             a full shell inside the toolbox'
+Write-Info 'Get-DevToolsAlias               the shortcuts (k, kgp, tfp ...); your own go in the file named above'
+Write-Info 'dev                             a full shell inside the toolbox: grey history suggestions, Tab completion, the same shortcuts'
 exit 0

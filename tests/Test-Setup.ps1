@@ -21,7 +21,9 @@ $bare  = Join-Path $base 'bare'                                # a folder that i
 $empty = Join-Path $base 'empty'                               # a PATH that has no docker on it
 $prof  = Join-Path (Join-Path $base 'profile dir') 'profile.ps1'   # its folder does not exist yet
 $log   = Join-Path $base 'docker.log'
+$aliasesFile = Join-Path $base 'my shortcuts.ps1'                  # where setup.ps1 puts the file for your own shortcuts
 New-Item -ItemType Directory -Force -Path $base, $empty | Out-Null
+$env:DEVTOOLS_ALIASES = $aliasesFile    # the module and setup.ps1 both honour it; the real home folder stays untouched
 
 . (Join-Path $PSScriptRoot 'FakeDocker.ps1')
 $fakebin = Install-FakeDocker
@@ -53,6 +55,7 @@ function Reset-Project {
     Remove-Item -LiteralPath $proj -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath (Split-Path -Parent $prof) -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $log -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $aliasesFile -Force -ErrorAction SilentlyContinue
     New-Item -ItemType Directory -Force -Path (Join-Path $proj 'certs') | Out-Null
     foreach ($f in 'setup.ps1', 'Devtools.psm1', 'Dockerfile', 'docker-compose.yml', '.env.example') {
         Copy-Item -LiteralPath (Join-Path $root $f) -Destination $proj
@@ -124,6 +127,20 @@ foreach ($p in @($ast.ParamBlock.Parameters | ForEach-Object { $_.Name.VariableP
     Check "parameter -$p is documented in the help comment" ($help -match "(?m)^\.PARAMETER\s+$p\b")
 }
 
+# What the history suggestions do depends on the PSReadLine version. The decision is a small function in
+# setup.ps1; it is taken out of the file and tried with versions chosen here, because the PSReadLine that
+# a test machine happens to have is not something a test can pick.
+$adviceFn = $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Get-ReadLineAdvice' }, $true) | Select-Object -First 1
+Check 'setup.ps1 has Get-ReadLineAdvice' ($null -ne $adviceFn)
+. ([scriptblock]::Create($adviceFn.Extent.Text))
+Check 'PSReadLine 2.0.0 (Windows PowerShell 5.1) is told to use Up and Down'  ((Get-ReadLineAdvice ([version] '2.0.0')).Kind -eq 'search')
+Check 'PSReadLine 2.0.9 is still too old'                                     ((Get-ReadLineAdvice ([version] '2.0.9')).Kind -eq 'search')
+Check 'PSReadLine 2.1.0 is the first with grey suggestions'                   ((Get-ReadLineAdvice ([version] '2.1.0')).Kind -eq 'suggestions')
+Check 'PSReadLine 2.3.5 has them'                                             ((Get-ReadLineAdvice ([version] '2.3.5')).Kind -eq 'suggestions')
+Check 'a two-part version such as 3.0 is understood'                          ((Get-ReadLineAdvice ([version] '3.0')).Kind -eq 'suggestions')
+Check 'no PSReadLine at all is reported as missing'                           ((Get-ReadLineAdvice $null).Kind -eq 'missing')
+Check 'the text names the version'                                            ((Get-ReadLineAdvice ([version] '2.0.0')).Text -match '2\.0\.0')
+
 # ---- 1. first run, everything works -------------------------------------------------------------
 Write-Host ''
 Write-Host '-- first run'
@@ -155,12 +172,27 @@ Check 'reports every tool as OK'                        (([regex]::Matches($r.Te
 Check 'finishes with All set'                           ($r.Text -match 'All set') $d
 Check 'tells you to open a new window (it ran with -File)' ($r.Text -match 'Open a NEW PowerShell window') $d
 Check 'does not offer the optional steps with -NoPrompt' (-not ($r.Text -match 'Azure login|Docker Desktop Kubernetes')) $d
+Check 'turns the shortcuts on and counts them'          ($r.Text -match '(?m)^  OK    38 shortcuts: k, kgp, tfp') $d
+Check 'makes the file for your own shortcuts'           ((Test-Path -LiteralPath $aliasesFile) -and ($r.Text -match 'made a file for your own shortcuts')) $d
+$aliasBytes = if (Test-Path -LiteralPath $aliasesFile) { [IO.File]::ReadAllBytes($aliasesFile) } else { [byte[]]@() }
+Check 'that file has a byte-order mark and nothing but ASCII after it' (($aliasBytes.Count -gt 3) -and ($aliasBytes[0] -eq 0xEF) -and ($aliasBytes[1] -eq 0xBB) -and ($aliasBytes[2] -eq 0xBF) -and (@($aliasBytes | Select-Object -Skip 3 | Where-Object { $_ -gt 127 }).Count -eq 0)) $d
+$aliasText = if (Test-Path -LiteralPath $aliasesFile) { Read-Text $aliasesFile } else { '' }
+Check 'it explains how to write a shortcut'             (($aliasText -match '@args') -and ($aliasText -match 'AKS_RG') -and ($aliasText -match 'Get-DevToolsAlias')) $aliasText
+Check 'and it uses Windows line endings'                (-not ($aliasText -match "(?<!`r)`n")) $d
+$aliasAst = [System.Management.Automation.Language.Parser]::ParseInput($aliasText, [ref] $null, [ref] $null)
+Check 'it is all comments, so it changes nothing by itself' (@($aliasAst.EndBlock.Statements).Count -eq 0) $aliasText
+Check 'says Tab completion is on'                       ($r.Text -match '(?m)^  OK    Tab completion for az, kubectl, terraform') $d
+Check 'says what the history suggestions will do'       ($r.Text -match '(?m)^  (OK|WARN)  +(history suggestions as you type|history: type the start|PSReadLine was not found)') $d
+Check 'checks that the image has the Tab completion helper' (((Get-CallCount '^run --rm devtools:latest devtools-complete$') -eq 1) -and ($r.Text -match 'Tab completion helper is in the image')) (@(Get-Calls) -join ' | ')
+Check 'points at the shortcuts and the file in what to do next' (($r.Text -match 'Get-DevToolsAlias\s+the shortcuts') -and ($r.Text -match 'grey history suggestions')) $d
 
 # ---- 2. second run: nothing is duplicated, nothing of yours is overwritten ------------------------
 Write-Host ''
 Write-Host '-- second run'
 $profileBefore = [Convert]::ToBase64String([IO.File]::ReadAllBytes($prof))
 [IO.File]::AppendAllText((Join-Path $proj '.env'), "`n# my own setting`n")
+[IO.File]::AppendAllText($aliasesFile, "`r`nfunction mine { 'mine' }`r`n")
+$aliasesBefore = [Convert]::ToBase64String([IO.File]::ReadAllBytes($aliasesFile))
 Remove-Item -LiteralPath $log -Force
 $r = Invoke-Setup @('-SkipBuild', '-SkipVerify', '-ProfilePath', $prof)
 $d = Show $r
@@ -171,6 +203,8 @@ Check 'says the profile is already set up'              ($r.Text -match 'already
 Check 'keeps your edited .env'                          ((Read-Text (Join-Path $proj '.env')) -match '# my own setting') $d
 Check '-SkipBuild: no build, only checks the image exists' (((Get-CallCount '^(compose )?build') -eq 0) -and ((Get-CallCount '^image inspect devtools:latest$') -eq 1)) (@(Get-Calls) -join ' | ')
 Check '-SkipVerify: no tool is run'                     ((Get-CallCount '^run ') -eq 0) (@(Get-Calls) -join ' | ')
+Check 'keeps your shortcuts file exactly as you left it' (([Convert]::ToBase64String([IO.File]::ReadAllBytes($aliasesFile))) -ceq $aliasesBefore) $d
+Check 'says it is keeping it'                           ($r.Text -match 'your own shortcuts file already exists, keeping it') $d
 
 # ---- 3. the project moved: the old profile line is replaced, the rest is kept --------------------
 Write-Host ''
@@ -316,6 +350,29 @@ Check 'exits 1'                                         ($r.Code -eq 1) $d
 Check 'names the language mode'                         ($r.Text -match 'ConstrainedLanguage') $d
 Check 'points at docker compose run --rm dev'           ($r.Text -match 'docker compose run --rm dev') $d
 Check 'changes nothing and calls no docker'             ((@(Get-Calls).Count -eq 0) -and -not (Test-Path -LiteralPath (Join-Path $proj '.env')) -and -not (Test-Path -LiteralPath $prof)) $d
+
+Write-Host ''
+Write-Host '-- the image has no Tab completion helper (built before it existed)'
+Reset-Project
+$r = Invoke-Setup @('-SkipBuild', '-ProfilePath', $prof) @{ DOCKER_FAIL_ON = 'devtools-complete' }
+$d = Show $r
+Check 'still exits 0 (it is a warning, the tools work)'  ($r.Code -eq 0) $d
+Check 'warns and says how to rebuild'                    (($r.Text -match '(?m)^  WARN  This image has no Tab completion helper') -and ($r.Text -match 'without -SkipBuild')) $d
+Check 'does not count it as a problem'                   (-not ($r.Text -match 'problem\(s\)')) $d
+
+Write-Host ''
+Write-Host '-- the shortcuts file cannot be created'
+Reset-Project
+$blocker2 = Join-Path $base 'another file'          # a FILE where the shortcuts file's folder should be
+[IO.File]::WriteAllText($blocker2, 'x')
+$savedAliases = $env:DEVTOOLS_ALIASES
+$env:DEVTOOLS_ALIASES = Join-Path $blocker2 'shortcuts.ps1'
+$r = Invoke-Setup @('-SkipBuild', '-SkipVerify', '-ProfilePath', $prof)
+$env:DEVTOOLS_ALIASES = $savedAliases
+$d = Show $r
+Check 'still exits 0 (the rest is set up)'               ($r.Code -eq 0) $d
+Check 'warns that it could not prepare the file'         ($r.Text -match 'Could not prepare your shortcuts file') $d
+Check 'goes on to Tab completion and the history'        (($r.Text -match 'Tab completion for az') -and ($r.Text -match 'All set')) $d
 
 # ---- 7. flags ----------------------------------------------------------------------------------
 Write-Host ''

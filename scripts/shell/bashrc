@@ -1,0 +1,36 @@
+# Read by interactive bash in the toolbox (from /etc/bash.bashrc, see the Dockerfile).
+# zsh is the default shell and the full experience (grey suggestions as you type); bash gets
+# the same aliases, Tab completion and a history that is kept between sessions.
+# shellcheck shell=bash disable=SC1091
+case $- in
+  *i*) ;;
+  *) return 0 ;;
+esac
+
+# History lives in ~ (the toolbox volume): shared by sessions, no duplicates.
+HISTSIZE=50000
+HISTFILESIZE=50000
+HISTCONTROL=ignoreboth:erasedups
+shopt -s histappend
+PROMPT_COMMAND="history -a${PROMPT_COMMAND:+;$PROMPT_COMMAND}"
+
+# Tab completion: bash-completion loads /usr/share/bash-completion/completions/<tool> on first use
+# (kubectl, helm, flux, gh, kustomize, azd and az are put there when the image is built).
+if ! shopt -oq posix && [ -r /usr/share/bash-completion/bash_completion ]; then
+  . /usr/share/bash-completion/bash_completion
+fi
+
+# az and terraform complete through their own protocols (kubectl, helm, flux ... load lazily above).
+. /etc/devtools/az-completion.sh
+if [ -x /usr/bin/terraform ]; then complete -C /usr/bin/terraform terraform tf; fi
+
+. /etc/devtools/aliases.sh
+
+# "k" completes like kubectl.
+if declare -F _completion_loader > /dev/null; then
+  _completion_loader kubectl 2> /dev/null
+  if declare -F __start_kubectl > /dev/null; then complete -o default -F __start_kubectl k; fi
+fi
+
+# Your own shortcuts, read last so they win.
+if [ -r "$HOME/.devtools-aliases.sh" ]; then . "$HOME/.devtools-aliases.sh"; fi

@@ -2,7 +2,7 @@ name: devtools
 
 services:
   # Interactive shell with the full toolbox:  docker compose run --rm dev
-  # (or:  docker compose up -d dev  then  docker compose exec dev bash)
+  # (or:  docker compose up -d dev  then  docker compose exec dev zsh)
   dev:
     build:
       context: .
@@ -33,7 +33,12 @@ services:
       # defaults to the ./repos folder in this project so it works out of the box.
       - ${REPOS_ROOT:-./repos}:/repos
     working_dir: /repos
-    command: ["bash"]
+    environment:
+      # Optional, for the aksc / aksup / aksx shortcuts: the resource group and name of your AKS
+      # cluster. Set them in your shell or in .env; when they are unset nothing is passed.
+      - AKS_RG
+      - AKS_NAME
+    command: ["zsh"]
 
 volumes:
   devtools-home:

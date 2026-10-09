@@ -244,5 +244,48 @@ RUN curl -fsSLo /tmp/kubectx.tar.gz "https://github.com/ahmetb/kubectx/releases/
 # RUN curl -fsSL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
 # ===========================================================================
 
+# ---------------------------------------------------------------------------
+# The interactive shell (dev, docker compose run --rm dev): zsh with grey suggestions from your
+# history as you type, syntax colours, Tab completion for every tool, and the shortcut aliases.
+# bash gets the same aliases and completion. Kept below the tools so the layers above stay cached.
+# DL3008 ignored: a dev toolbox tracks current, security-patched packages.
+# ---------------------------------------------------------------------------
+# hadolint ignore=DL3008
+RUN DEBIAN_FRONTEND=noninteractive apt-get update \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+      bash-completion \
+      zsh \
+      zsh-autosuggestions \
+      zsh-syntax-highlighting \
+ && rm -rf /var/lib/apt/lists/*
+
+# /etc/devtools holds the rc files, so they apply whatever is on the /root volume. ZDOTDIR makes
+# zsh read /etc/devtools/zdot/.zshrc (which also reads your own ~/.zshrc, if you make one) and
+# keeps zsh's first-run wizard from appearing.
+COPY scripts/shell/ /etc/devtools/
+COPY scripts/devtools-complete.sh /usr/local/bin/devtools-complete
+ENV ZDOTDIR=/etc/devtools/zdot
+
+# sed strips CRs in case Windows git checked the files out with CRLF line endings.
+# The completion scripts come from the tools installed above, so they match the pinned versions.
+# A tool whose script cannot be generated only loses its completion; the smoke test checks them all.
+RUN sed -i 's/\r$//' /etc/devtools/* /usr/local/bin/devtools-complete \
+ && chmod 0755 /usr/local/bin/devtools-complete \
+ && mkdir -p /etc/devtools/zdot /usr/share/zsh/vendor-completions /usr/share/bash-completion/completions \
+ && mv /etc/devtools/zshrc /etc/devtools/zdot/.zshrc \
+ && export AZD_SKIP_UPDATE_CHECK=1 \
+ && printf '\n# DevOps toolbox: aliases, history and Tab completion\nif [ -r /etc/devtools/bashrc ]; then . /etc/devtools/bashrc; fi\n' >> /etc/bash.bashrc \
+ && for t in kubectl helm flux kustomize azd; do \
+      { "$t" completion bash > "/usr/share/bash-completion/completions/$t" \
+        && "$t" completion zsh > "/usr/share/zsh/vendor-completions/_$t"; } \
+      || { echo "WARNING: could not generate shell completion for $t"; \
+           rm -f "/usr/share/bash-completion/completions/$t" "/usr/share/zsh/vendor-completions/_$t"; }; \
+    done \
+ && { { gh completion -s bash > /usr/share/bash-completion/completions/gh \
+        && gh completion -s zsh > /usr/share/zsh/vendor-completions/_gh; } \
+      || { echo "WARNING: could not generate shell completion for gh"; \
+           rm -f /usr/share/bash-completion/completions/gh /usr/share/zsh/vendor-completions/_gh; }; } \
+ && zsh -c 'autoload -Uz compinit && compinit -u'
+
 ENTRYPOINT ["/usr/local/bin/devtools-entrypoint"]
-CMD ["bash"]
+CMD ["zsh"]

@@ -38,7 +38,9 @@ jobs:
           sc="$RUNNER_TEMP/shellcheck-v0.10.0/shellcheck"
           "$sc" --version | sed -n 2p
           "$sc" -s sh scripts/devtools-entrypoint.sh
-          "$sc" -s bash scripts/import-docker-desktop-kube.sh tests/*.sh tests/fakebin/docker
+          "$sc" -s bash scripts/import-docker-desktop-kube.sh scripts/devtools-complete.sh \
+            scripts/shell/aliases.sh scripts/shell/az-completion.sh scripts/shell/bashrc \
+            tests/*.sh tests/fakebin/docker
 
       - name: Compose file renders
         run: docker compose config -q
@@ -57,12 +59,18 @@ jobs:
         if: ${{ !cancelled() }}
         run: pwsh -NoProfile -File tests/Test-Uninstall.ps1 2>&1 | tee "$RUNNER_TEMP/uninstall-tests.log"
 
+      - name: PowerShell 7 in a real terminal (Tab menu, completion, history suggestions)
+        id: ptypwsh
+        if: ${{ !cancelled() }}
+        run: python3 tests/pty_shell_test.py pwsh -- pwsh -NoLogo 2>&1 | tee "$RUNNER_TEMP/pty-pwsh.log"
+
       - name: Report results as annotations
         if: always()
         run: |
-          tests/ci-annotate.sh "PowerShell wrapper tests" "${{ steps.pwsh.outcome }}" "$RUNNER_TEMP/pwsh.log"
+          tests/ci-annotate.sh "PowerShell wrapper tests" "${{ steps.pwsh.outcome }}" "$RUNNER_TEMP/pwsh.log" '^(PowerShell|FAIL|      |ALL|[0-9]+ TEST)'
           tests/ci-annotate.sh "setup.ps1 tests" "${{ steps.setup.outcome }}" "$RUNNER_TEMP/setup-tests.log" '^(PowerShell|--|FAIL|      |ALL|[0-9]+ SETUP)'
           tests/ci-annotate.sh "uninstall.ps1 tests" "${{ steps.uninstall.outcome }}" "$RUNNER_TEMP/uninstall-tests.log" '^(PowerShell|--|FAIL|SKIP|      |ALL|[0-9]+ UNINSTALL)'
+          tests/ci-annotate.sh "PowerShell 7 terminal test" "${{ steps.ptypwsh.outcome }}" "$RUNNER_TEMP/pty-pwsh.log" '^(PASS|FAIL|      |ALL|[0-9]+ SHELL)'
 
   windows:
     # The wrappers are meant for Windows, where the default shell is Windows PowerShell 5.1.
@@ -96,7 +104,7 @@ jobs:
       - name: Report results as annotations
         if: always()
         run: |
-          tests/ci-annotate.sh "wrapper tests on Windows (${{ matrix.ps }})" "${{ steps.pwsh.outcome }}" "$RUNNER_TEMP/pwsh.log"
+          tests/ci-annotate.sh "wrapper tests on Windows (${{ matrix.ps }})" "${{ steps.pwsh.outcome }}" "$RUNNER_TEMP/pwsh.log" '^(PowerShell|FAIL|      |ALL|[0-9]+ TEST)'
           tests/ci-annotate.sh "setup.ps1 tests on Windows (${{ matrix.ps }})" "${{ steps.setup.outcome }}" "$RUNNER_TEMP/setup-tests.log" '^(PowerShell|--|FAIL|      |ALL|[0-9]+ SETUP)'
           tests/ci-annotate.sh "uninstall.ps1 tests on Windows (${{ matrix.ps }})" "${{ steps.uninstall.outcome }}" "$RUNNER_TEMP/uninstall-tests.log" '^(PowerShell|--|FAIL|SKIP|      |ALL|[0-9]+ UNINSTALL)'
 
@@ -125,6 +133,19 @@ jobs:
             -e EXPECT_YQ="$(arg YQ_VERSION)" \
             -e EXPECT_GH="$(arg GH_VERSION)" \
             devtools:ci bash /tests/smoke.sh 2>&1 | tee "$RUNNER_TEMP/smoke.log"
+
+      - name: Terminal test, zsh (typing into the image like a person)
+        id: ptyzsh
+        if: ${{ !cancelled() }}
+        run: |
+          # dev starts zsh unless told otherwise; docker compose run dev and the dev function rely on it.
+          test "$(docker image inspect devtools:ci --format '{{json .Config.Cmd}}')" = '["zsh"]'
+          python3 tests/pty_shell_test.py zsh --full -- docker run --rm -it -e TERM=xterm-256color devtools:ci zsh 2>&1 | tee "$RUNNER_TEMP/pty-zsh.log"
+
+      - name: Terminal test, bash
+        id: ptybash
+        if: ${{ !cancelled() }}
+        run: python3 tests/pty_shell_test.py bash --full -- docker run --rm -it -e TERM=xterm-256color devtools:ci bash 2>&1 | tee "$RUNNER_TEMP/pty-bash.log"
 
       - name: Importer end to end (container reaches a fake API on the host)
         id: e2e
@@ -180,6 +201,8 @@ jobs:
         run: |
           tests/ci-annotate.sh "docker build" "${{ steps.build.outcome }}" "$RUNNER_TEMP/build.log"
           tests/ci-annotate.sh "smoke test" "${{ steps.smoke.outcome }}" "$RUNNER_TEMP/smoke.log" '^(PASS|FAIL|RESULT|---)'
+          tests/ci-annotate.sh "terminal test, zsh" "${{ steps.ptyzsh.outcome }}" "$RUNNER_TEMP/pty-zsh.log" '^(PASS|FAIL|      |ALL|[0-9]+ SHELL)'
+          tests/ci-annotate.sh "terminal test, bash" "${{ steps.ptybash.outcome }}" "$RUNNER_TEMP/pty-bash.log" '^(PASS|FAIL|      |ALL|[0-9]+ SHELL)'
           tests/ci-annotate.sh "importer end to end" "${{ steps.e2e.outcome }}" "$RUNNER_TEMP/e2e.log" '^(PASS|FAIL|RESULT|==|\[setup\]|fake API|PKI|      \|)'
           tests/ci-annotate.sh "setup.ps1 on real Docker" "${{ steps.setup.outcome }}" "$RUNNER_TEMP/setup-real.log" '^(==|  OK|  WARN|  FAIL|All set|DevOps toolbox)'
           tests/ci-annotate.sh "uninstall.ps1 on real Docker" "${{ steps.uninstall.outcome }}" "$RUNNER_TEMP/uninstall-real.log" '^(==|  OK|  WARN|  FAIL|Done|DevOps toolbox|#)'
@@ -191,6 +214,14 @@ jobs:
             echo '## Smoke test'
             echo '```'
             cat "$RUNNER_TEMP/smoke.log" 2>/dev/null || echo 'did not run'
+            echo '```'
+            echo '## Terminal test, zsh'
+            echo '```'
+            cat "$RUNNER_TEMP/pty-zsh.log" 2>/dev/null || echo 'did not run'
+            echo '```'
+            echo '## Terminal test, bash'
+            echo '```'
+            cat "$RUNNER_TEMP/pty-bash.log" 2>/dev/null || echo 'did not run'
             echo '```'
             echo '## Importer end to end'
             echo '```'

@@ -1,0 +1,47 @@
+# Interactive zsh in the toolbox: history kept on the volume, grey suggestions from that history
+# as you type (Right arrow accepts), Tab completion for every tool, the shared aliases.
+# The Dockerfile copies this file to /etc/devtools/zdot/.zshrc and points ZDOTDIR there, so zsh
+# never starts its first-run wizard, whatever is in ~ (the volume).
+
+# --- history: in ~ (the volume), shared by sessions, no duplicates ---------------------------
+HISTFILE=$HOME/.zsh_history
+HISTSIZE=50000
+SAVEHIST=50000
+setopt APPEND_HISTORY SHARE_HISTORY HIST_IGNORE_ALL_DUPS HIST_IGNORE_SPACE HIST_REDUCE_BLANKS INTERACTIVE_COMMENTS
+
+# --- Tab completion --------------------------------------------------------------------------
+# The completion scripts for kubectl, helm, flux, gh, kustomize and azd are generated when the
+# image is built (see the Dockerfile). compinit -C reuses the cache made at build time.
+autoload -Uz compinit bashcompinit
+compinit -C
+bashcompinit
+zstyle ':completion:*' menu select
+zstyle ':completion:*' matcher-list 'm:{a-zA-Z}={A-Za-z}'
+source /etc/devtools/az-completion.sh
+if [[ -x /usr/bin/terraform ]]; then complete -o nospace -C /usr/bin/terraform terraform; fi
+
+# --- prompt and keys -------------------------------------------------------------------------
+PROMPT='%F{cyan}toolbox%f %F{yellow}%~%f %# '
+# Up and Down search the history for lines that start with what you have typed.
+autoload -Uz up-line-or-beginning-search down-line-or-beginning-search
+zle -N up-line-or-beginning-search
+zle -N down-line-or-beginning-search
+bindkey '^[[A' up-line-or-beginning-search
+bindkey '^[OA' up-line-or-beginning-search
+bindkey '^[[B' down-line-or-beginning-search
+bindkey '^[OB' down-line-or-beginning-search
+
+# --- aliases, then your own files (they win) -------------------------------------------------
+source /etc/devtools/aliases.sh
+if [[ -r $HOME/.devtools-aliases.sh ]]; then source $HOME/.devtools-aliases.sh; fi
+if [[ -r $HOME/.zshrc ]]; then source $HOME/.zshrc; fi
+
+# --- suggestions and colours: these two must come last ----------------------------------------
+: ${ZSH_AUTOSUGGEST_HIGHLIGHT_STYLE:=fg=244}
+: ${ZSH_AUTOSUGGEST_BUFFER_MAX_SIZE:=300}
+if [[ -r /usr/share/zsh-autosuggestions/zsh-autosuggestions.zsh ]]; then
+  source /usr/share/zsh-autosuggestions/zsh-autosuggestions.zsh
+fi
+if [[ -r /usr/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh ]]; then
+  source /usr/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh
+fi

@@ -7,6 +7,7 @@
 #   DOCKER_FORCE_EXIT  exit code of `docker run ...` and of any call not listed below (default 0)
 #   DOCKER_FAIL_ON     a word: a call that has it as an argument exits 1
 #   DOCKER_FAKE_OUTPUT when set, `docker run ...` prints one line
+#   DOCKER_RUN_FILE    a file: `docker run ...` prints its contents (canned Tab-completion answers)
 #   DOCKER_SERVER      what `docker version --format ...` prints          (default linux/99.0.0-fake)
 #   DOCKER_VERSION_EXIT, DOCKER_COMPOSE_EXIT, DOCKER_BUILD_EXIT, DOCKER_IMAGE_EXIT
 #                      exit codes of `version`, `compose version`, `build` and `compose build`,
@@ -36,7 +37,8 @@ case "${1:-}" in
     esac ;;
   build) exit "${DOCKER_BUILD_EXIT:-0}" ;;
   image) exit "${DOCKER_IMAGE_EXIT:-0}" ;;
-  run)   if [ -n "${DOCKER_FAKE_OUTPUT:-}" ]; then echo "fake docker run ok"; fi ;;
+  run)   if [ -n "${DOCKER_FAKE_OUTPUT:-}" ]; then echo "fake docker run ok"; fi
+         if [ -n "${DOCKER_RUN_FILE:-}" ] && [ -f "$DOCKER_RUN_FILE" ]; then cat "$DOCKER_RUN_FILE"; fi ;;
   ps)    if [ -n "${DOCKER_PS_FILE:-}" ] && [ -f "$DOCKER_PS_FILE" ]; then cat "$DOCKER_PS_FILE"; fi ;;
   rm)    if [ -n "${DOCKER_PS_FILE:-}" ]; then : > "$DOCKER_PS_FILE"; fi ;;
   volume)

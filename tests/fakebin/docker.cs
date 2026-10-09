@@ -75,6 +75,14 @@ public static class FakeDocker
         {
             Console.WriteLine("fake docker run ok");
         }
+        if (first == "run")
+        {
+            string runFile = Environment.GetEnvironmentVariable("DOCKER_RUN_FILE");
+            if (!string.IsNullOrEmpty(runFile) && File.Exists(runFile))
+            {
+                Console.Write(File.ReadAllText(runFile));
+            }
+        }
         if (first == "ps")
         {
             string psFile = Environment.GetEnvironmentVariable("DOCKER_PS_FILE");
