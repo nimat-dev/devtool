@@ -16,7 +16,7 @@ Flux CLI, AWS CLI v2, GitHub CLI (gh), kubectx/kubens, plus jq, yq, git, ssh, ma
 
 ## Prerequisites
 
-- Docker Desktop running (WSL2 or Hyper-V backend — either is fine).
+- Docker Desktop running (WSL2 or Hyper-V backend, either is fine).
 - PowerShell (Windows PowerShell 5.1 or PowerShell 7+).
 - No admin rights or other installs required.
 
@@ -99,13 +99,13 @@ Import-Module 'C:\path\to\devtool\Devtools.psm1' -Force
 
 Reopen PowerShell. Now `az`, `kubectl`, `terraform`, etc. are the container
 versions. Because there's no local `az` on this machine, these functions simply
-become the default — no PATH changes needed. Check what they point at:
+become the default, no PATH changes needed. Check what they point at:
 
 ```powershell
 Get-DevToolsInfo
 ```
 
-## 3. First login (device code — no browser in the container)
+## 3. First login (device code, no browser in the container)
 
 ```powershell
 az login --use-device-code
@@ -319,7 +319,7 @@ Edit the `# ---- EXTRA TOOLS ----` block at the bottom of the `Dockerfile`
 docker compose build
 ```
 
-It's at the bottom on purpose — everything above stays cached, so adding a tool
+It's at the bottom on purpose: everything above stays cached, so adding a tool
 is a quick rebuild. To upgrade a pinned tool, bump its version in `.env`
 (or the `ARG` default) and rebuild.
 
@@ -342,7 +342,7 @@ This project is already a git repo with an initial commit. Since you can't insta
 
 ```powershell
 docker compose build                 # if you haven't already
-gh auth login                        # choose "Paste an authentication token" (a PAT) — no browser needed
+gh auth login                        # choose "Paste an authentication token" (a PAT), no browser needed
 gh repo create devtool --private --source . --remote origin --push
 ```
 
@@ -488,8 +488,16 @@ the Up and Down search are tested with PowerShell 7 and with stand-ins for PSRea
 Two things, usually both:
 1. Drop your corporate root CA into `certs/` as a `*.crt` (PEM). The Dockerfile
    trusts it before any download. See `certs/README.md`.
-2. Set the proxy — in `.env` (`HTTP_PROXY` / `HTTPS_PROXY`) and in Docker Desktop
+2. Set the proxy in `.env` (`HTTP_PROXY` / `HTTPS_PROXY`) and in Docker Desktop
    under *Settings → Resources → Proxies*. Then `docker compose build`.
+
+**Build fails with "429 Too Many Requests", or Docker Hub is blocked.** The image starts from
+`debian:bookworm-slim` on Docker Hub. Put a mirror of the same image in `.env` and rebuild
+(`.\setup.ps1`):
+```
+BASE_IMAGE=registry.corp.example/library/debian:bookworm-slim
+```
+It has to be Debian 12; the install steps use apt.
 
 **`Import-Module` fails with "running scripts is disabled on this system" (or "not digitally
 signed").** PowerShell's execution policy is blocking the module. For your user only, no admin

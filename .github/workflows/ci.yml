@@ -117,7 +117,20 @@ jobs:
 
       - name: Build image
         id: build
-        run: docker build --progress=plain --tag devtools:ci . 2>&1 | tee "$RUNNER_TEMP/build.log"
+        run: |
+          # Docker Hub often answers the shared GitHub runners with "429 Too Many Requests", so try
+          # public mirrors of the same Debian image first and Docker Hub last. The one that worked
+          # is kept for the later steps (docker compose, used by setup.ps1, reads BASE_IMAGE too).
+          for base in public.ecr.aws/docker/library/debian:bookworm-slim mirror.gcr.io/library/debian:bookworm-slim debian:bookworm-slim; do
+            echo "Building on $base"
+            if docker build --progress=plain --build-arg "BASE_IMAGE=$base" --tag devtools:ci . 2>&1 | tee "$RUNNER_TEMP/build.log"; then
+              echo "BASE_IMAGE=$base" >> "$GITHUB_ENV"
+              exit 0
+            fi
+            # Only a failure to fetch the base image is worth another try; anything else is a real failure.
+            grep -qiE 'failed to resolve source metadata|unexpected status from|toomanyrequests|manifest unknown|pull access denied|429 Too Many Requests' "$RUNNER_TEMP/build.log" || exit 1
+          done
+          exit 1
 
       - name: Smoke test every tool inside the image
         id: smoke

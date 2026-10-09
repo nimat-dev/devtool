@@ -8,6 +8,7 @@ services:
       context: .
       dockerfile: Dockerfile
       args:
+        BASE_IMAGE: ${BASE_IMAGE:-debian:bookworm-slim}
         HTTP_PROXY: ${HTTP_PROXY:-}
         HTTPS_PROXY: ${HTTPS_PROXY:-}
         AZURE_CLI_VERSION: ${AZURE_CLI_VERSION:-}

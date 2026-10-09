@@ -1,6 +1,4 @@
-# syntax=docker/dockerfile:1
-#
-# DevOps toolbox image — one image, every CLI a senior DevOps engineer needs.
+# DevOps toolbox image: one image, every CLI a senior DevOps engineer needs.
 # Layers are ordered stable -> volatile so appending a tool later is a cheap rebuild.
 #
 # Version policy:
@@ -8,7 +6,12 @@
 #   - apt/script tools (az, terraform, azd, aws) default to LATEST so a stale pin
 #     never breaks the build. Pin them by setting the matching ARG (see .env.example).
 
-FROM debian:bookworm-slim
+# Base image: Debian 12 from Docker Hub. If your company blocks Docker Hub, or Docker Hub says
+# "429 Too Many Requests", set BASE_IMAGE in .env to a mirror of it (same Debian 12, the steps
+# below use apt).
+ARG BASE_IMAGE=debian:bookworm-slim
+# hadolint ignore=DL3006
+FROM ${BASE_IMAGE}
 
 # Fail a RUN if any stage of a pipe fails (needed for the curl | gpg / curl | bash lines).
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
@@ -110,7 +113,7 @@ RUN curl -fsSLo /usr/local/bin/kubectl "https://dl.k8s.io/release/v${KUBECTL_VER
  && rm -f /tmp/kubectl.sha256
 
 # ---------------------------------------------------------------------------
-# kubelogin (Azure AD auth plugin for kubectl/AKS — needed for `az aks get-credentials`
+# kubelogin (Azure AD auth plugin for kubectl/AKS, needed for `az aks get-credentials`
 # against AAD-enabled clusters). GitHub release zip. Pinned.
 # ---------------------------------------------------------------------------
 ARG KUBELOGIN_VERSION=0.1.4
@@ -161,7 +164,7 @@ RUN if [ -n "${AZD_VERSION}" ]; then \
  && azd version
 
 # ---------------------------------------------------------------------------
-# AWS CLI v2 (official installer zip — no apt package exists for v2).
+# AWS CLI v2 (official installer zip, no apt package exists for v2).
 # Optional pin via AWSCLI_VERSION (e.g. 2.17.0); blank = latest.
 # ---------------------------------------------------------------------------
 ARG AWSCLI_VERSION=""
@@ -184,7 +187,7 @@ RUN curl -fsSLo /usr/local/bin/yq "https://github.com/mikefarah/yq/releases/down
  && yq --version
 
 # ---------------------------------------------------------------------------
-# GitHub CLI (gh) — create repos, open PRs, auth with a token (no browser).
+# GitHub CLI (gh): create repos, open PRs, auth with a token (no browser).
 # GitHub release tarball. Pinned via GH_VERSION.
 # ---------------------------------------------------------------------------
 ARG GH_VERSION=2.63.2
@@ -220,7 +223,7 @@ RUN sed -i 's/\r$//' /usr/local/bin/devtools-entrypoint /usr/local/bin/import-do
 # Append one-off installs below, then rebuild. Kept at the bottom so everything
 # above stays cached. Examples (uncomment / adapt):
 
-# kubectx + kubens — fast context / namespace switching for kubectl.
+# kubectx + kubens: fast context / namespace switching for kubectl.
 # GitHub release tarballs (ahmetb/kubectx). Pinned via KUBECTX_VERSION.
 ARG KUBECTX_VERSION=0.9.5
 RUN curl -fsSLo /tmp/kubectx.tar.gz "https://github.com/ahmetb/kubectx/releases/download/v${KUBECTX_VERSION}/kubectx_v${KUBECTX_VERSION}_linux_x86_64.tar.gz" \
