@@ -105,7 +105,12 @@ class Term:
         """Ask the shell to exit and wait for it. Killing a `docker run -it` client does not stop
         the container, so give it time to end by itself before falling back to the kill."""
         try:
-            self.send("\x03\x15exit\r")
+            # Ctrl-C first and on its own: the terminal throws away input that is still waiting
+            # when it turns a Ctrl-C into SIGINT, which is how an "exit" typed right behind it
+            # got lost in bash.
+            self.send("\x03")
+            self.pump(0.5)
+            self.send("\x15exit\r")
             end = time.time() + 20
             while time.time() < end and self.proc.poll() is None:
                 self.pump(0.2)
