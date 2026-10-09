@@ -374,6 +374,7 @@ def main(argv):
         complete("helm ins", r"helm install ?", "Tab completes helm")
     if "az" in tools:
         complete("az acc", r"az account ?", "Tab completes az", timeout=60)
+        complete("azsubs --refr", r"azsubs --refresh ?", "Tab completes flags through the alias azsubs", timeout=60)
 
     t.close()
     print()

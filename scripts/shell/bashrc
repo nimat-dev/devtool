@@ -34,3 +34,49 @@ fi
 
 # Your own shortcuts, read last so they win.
 if [ -r "$HOME/.devtools-aliases.sh" ]; then . "$HOME/.devtools-aliases.sh"; fi
+
+# Shortcuts such as kgp or azsubs: bash does not look inside an alias when it completes, so the
+# words are put back the way the tool expects them ("kgp --all" becomes "kubectl get pods --all")
+# and the tool's own completion answers. The ones that are the bare tool name (k, tf) are above.
+_devtools_complete_alias() {
+  local shortcut=${COMP_WORDS[0]} expansion
+  expansion=${BASH_ALIASES[$shortcut]-}
+  [ -n "$expansion" ] || return 0
+  local -a spelled
+  read -r -a spelled <<< "$expansion"
+  local tool=${spelled[0]} spec
+  if ! spec=$(complete -p "$tool" 2> /dev/null); then
+    # Not loaded yet (helm, flux ...). Never when the tool already has one: the loader would
+    # replace it with a minimal one.
+    declare -F _completion_loader > /dev/null && _completion_loader "$tool" 2> /dev/null
+    spec=$(complete -p "$tool" 2> /dev/null) || return 0
+  fi
+
+  # The words, the line and the cursor as bash would have had them if the shortcut had been spelled out.
+  local -a words=("${spelled[@]}" "${COMP_WORDS[@]:1}")
+  local lead=${COMP_LINE%%[![:space:]]*}
+  local line="$lead$expansion${COMP_LINE#"$lead$shortcut"}"
+  local point=$((COMP_POINT + ${#expansion} - ${#shortcut}))
+  local cword=$((COMP_CWORD + ${#spelled[@]} - 1))
+  local -a COMP_WORDS=("${words[@]}")
+  local COMP_LINE=$line COMP_POINT=$point COMP_CWORD=$cword
+  local cur=${COMP_WORDS[COMP_CWORD]} prev=${COMP_WORDS[COMP_CWORD - 1]}
+
+  local how is_function=' -F ([A-Za-z0-9_.:-]+)' is_command=" -C '?([^' ]+)"
+  if [[ $spec =~ $is_function ]]; then
+    how=${BASH_REMATCH[1]}
+    "$how" "$tool" "$cur" "$prev"
+  elif [[ $spec =~ $is_command ]]; then
+    how=${BASH_REMATCH[1]}
+    local IFS=$'\n'
+    # shellcheck disable=SC2207
+    COMPREPLY=($(COMP_LINE="$COMP_LINE" COMP_POINT="$COMP_POINT" "$how" "$tool" "$cur" "$prev" 2> /dev/null))
+  fi
+}
+for _devtools_name in "${!BASH_ALIASES[@]}"; do
+  case ${BASH_ALIASES[$_devtools_name]} in
+    "kubectl "* | "helm "* | "flux "* | "gh "* | "kustomize "* | "azd "* | "terraform "* | "az "*)
+      complete -o default -F _devtools_complete_alias "$_devtools_name" ;;
+  esac
+done
+unset _devtools_name

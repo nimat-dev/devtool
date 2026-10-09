@@ -154,11 +154,17 @@ case "$zout" in *"AS=1 HL="*) ;; *) bad "zsh: autosuggestions are not loaded: $z
 case "$zout" in *"HL=none"*) bad "zsh: syntax highlighting is not loaded: $zout" ;; *"AS=1 HL="*) ok "zsh: autosuggestions and syntax highlighting are loaded" ;; esac
 case "$zout" in *"COMPS=11111111"*) ok "zsh: Tab completion is set up for kubectl helm flux kustomize azd gh terraform az" ;; *) bad "zsh: some completions are not registered: $zout" ;; esac
 
-bout=$(bash -ic 'alias kgp; type aksx | head -n 1; complete -p k tf terraform az' 2>&1 < /dev/null | quiet)
+bout=$(bash -ic 'alias kgp; type aksx | head -n 1; complete -p k tf terraform az kgp' 2>&1 < /dev/null | quiet)
 case "$bout" in *"kgp='kubectl get pods'"*) ok "bash: the alias kgp is defined" ;; *) bad "bash: alias kgp missing: $bout" ;; esac
 case "$bout" in *"aksx is a function"*) ok "bash: the function aksx is defined" ;; *) bad "bash: aksx missing: $bout" ;; esac
 case "$bout" in *"__start_kubectl k"*) ok "bash: k completes like kubectl" ;; *) bad "bash: k has no completion: $bout" ;; esac
-case "$bout" in *"-C /usr/bin/terraform tf"*"-C /usr/bin/terraform terraform"*|*"-C /usr/bin/terraform terraform"*"-C /usr/bin/terraform tf"*) ok "bash: terraform and tf complete through terraform itself" ;; *) bad "bash: terraform/tf have no completion: $bout" ;; esac
+# bash prints the command of "complete -C" with or without quotes depending on its version.
+if grep -Eq "^complete -C '?/usr/bin/terraform'? tf\$" <<< "$bout" && grep -Eq "^complete -C '?/usr/bin/terraform'? terraform\$" <<< "$bout"; then
+  ok "bash: terraform and tf complete through terraform itself"
+else
+  bad "bash: terraform/tf have no completion: $bout"
+fi
+case "$bout" in *"_devtools_complete_alias kgp"*) ok "bash: shortcuts such as kgp complete through the tool" ;; *) bad "bash: kgp has no completion: $bout" ;; esac
 case "$bout" in *"_devtools_az_complete az"*) ok "bash: az completes through argcomplete" ;; *) bad "bash: az has no completion: $bout" ;; esac
 
 # devtools-complete is what PowerShell asks on Tab: the real tool in the image answers.
