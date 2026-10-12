@@ -461,6 +461,7 @@ if wanted "$want_login" 'Sign in to Azure now (device code, no browser needed in
 fi
 if wanted "$want_kube" "Import Docker Desktop's Kubernetes context now (Kubernetes must be enabled in Docker Desktop)?"; then
   step 'Docker Desktop Kubernetes'
+  # shellcheck disable=SC2119 # its context and kubeconfig arguments are optional
   if devtools-import-kube; then did_kube=1; else warn 'not imported; fix the message above and run  devtools-import-kube'; fi
 fi
 

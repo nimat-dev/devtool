@@ -32,16 +32,19 @@ jobs:
           "$RUNNER_TEMP/hadolint" Dockerfile
 
       - name: shellcheck
+        id: shellcheck
         run: |
-          curl -fsSL https://github.com/koalaman/shellcheck/releases/download/v0.10.0/shellcheck-v0.10.0.linux.x86_64.tar.xz \
-            | tar -xJ -C "$RUNNER_TEMP"
-          sc="$RUNNER_TEMP/shellcheck-v0.10.0/shellcheck"
-          "$sc" --version | sed -n 2p
-          "$sc" -s sh scripts/devtools-entrypoint.sh
-          "$sc" -s bash devtools.sh setup.sh uninstall.sh \
-            scripts/import-docker-desktop-kube.sh scripts/devtools-complete.sh \
-            scripts/shell/aliases.sh scripts/shell/az-completion.sh scripts/shell/bashrc \
-            tests/*.sh tests/fakebin/docker
+          {
+            curl -fsSL https://github.com/koalaman/shellcheck/releases/download/v0.10.0/shellcheck-v0.10.0.linux.x86_64.tar.xz \
+              | tar -xJ -C "$RUNNER_TEMP"
+            sc="$RUNNER_TEMP/shellcheck-v0.10.0/shellcheck"
+            "$sc" --version | sed -n 2p
+            "$sc" -s sh scripts/devtools-entrypoint.sh
+            "$sc" -s bash devtools.sh setup.sh uninstall.sh \
+              scripts/import-docker-desktop-kube.sh scripts/devtools-complete.sh \
+              scripts/shell/aliases.sh scripts/shell/az-completion.sh scripts/shell/bashrc \
+              tests/*.sh tests/fakebin/docker
+          } 2>&1 | tee "$RUNNER_TEMP/shellcheck.log"
 
       - name: Compose file renders
         run: docker compose config -q
@@ -85,9 +88,30 @@ jobs:
         if: ${{ !cancelled() }}
         run: python3 tests/pty_shell_test.py hostbash -- bash 2>&1 | tee "$RUNNER_TEMP/pty-hostbash.log"
 
+      # The scripts promise bash 4.2 or newer (the oldest bash still in use: CentOS 7 / RHEL 7). The
+      # official bash images have exactly those versions. Docker Hub is tried last (rate limits).
+      - name: The bash tests on bash 4.2 and 4.3 (docker)
+        id: oldbash
+        if: ${{ !cancelled() }}
+        run: |
+          {
+            for v in 4.2 4.3; do
+              img=''
+              for base in public.ecr.aws/docker/library mirror.gcr.io/library docker.io/library; do
+                if docker pull -q "$base/bash:$v" > /dev/null 2>&1; then img="$base/bash:$v"; break; fi
+              done
+              if [ -z "$img" ]; then echo "FAIL  could not pull bash:$v from any registry"; exit 1; fi
+              for t in test-devtools-sh test-setup-sh test-uninstall-sh; do
+                echo "== $t on bash $v"
+                docker run --rm -v "$PWD:/src:ro" "$img" bash -c 'cp -a /src /repo && cd /repo && bash "tests/$0.sh"' "$t"
+              done
+            done
+          } 2>&1 | tee "$RUNNER_TEMP/old-bash.log"
+
       - name: Report results as annotations
         if: always()
         run: |
+          tests/ci-annotate.sh "shellcheck" "${{ steps.shellcheck.outcome }}" "$RUNNER_TEMP/shellcheck.log"
           tests/ci-annotate.sh "PowerShell wrapper tests" "${{ steps.pwsh.outcome }}" "$RUNNER_TEMP/pwsh.log" '^(PowerShell|FAIL|      |ALL|[0-9]+ TEST)'
           tests/ci-annotate.sh "setup.ps1 tests" "${{ steps.setup.outcome }}" "$RUNNER_TEMP/setup-tests.log" '^(PowerShell|--|FAIL|      |ALL|[0-9]+ SETUP)'
           tests/ci-annotate.sh "uninstall.ps1 tests" "${{ steps.uninstall.outcome }}" "$RUNNER_TEMP/uninstall-tests.log" '^(PowerShell|--|FAIL|SKIP|      |ALL|[0-9]+ UNINSTALL)'
@@ -96,6 +120,7 @@ jobs:
           tests/ci-annotate.sh "setup.sh tests" "${{ steps.bashsetup.outcome }}" "$RUNNER_TEMP/bash-setup-tests.log" '^(bash|FAIL|SKIP|      |ALL|[0-9]+ TEST)'
           tests/ci-annotate.sh "uninstall.sh tests" "${{ steps.bashuninstall.outcome }}" "$RUNNER_TEMP/bash-uninstall-tests.log" '^(bash|FAIL|SKIP|      |ALL|[0-9]+ TEST)'
           tests/ci-annotate.sh "bash terminal test (devtools.sh)" "${{ steps.ptyhostbash.outcome }}" "$RUNNER_TEMP/pty-hostbash.log" '^(PASS|FAIL|      |ALL|[0-9]+ SHELL)'
+          tests/ci-annotate.sh "bash tests on bash 4.2 and 4.3" "${{ steps.oldbash.outcome }}" "$RUNNER_TEMP/old-bash.log" '^(==|bash |FAIL|SKIP|      |ALL|[0-9]+ TEST)'
 
   windows:
     # The wrappers are meant for Windows, where the default shell is Windows PowerShell 5.1.
