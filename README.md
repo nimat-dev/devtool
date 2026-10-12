@@ -199,6 +199,8 @@ your bash read), and they are aliases, so `kgp -n kube-system` runs `kubectl get
 and `kex web -- sh` keeps its `--`. Aliases only expand in an interactive shell; in a script call the
 tool itself, or run `shopt -s expand_aliases` first. Set `AKS_RG` and `AKS_NAME` once (for example
 `export AKS_RG=my-rg AKS_NAME=my-cluster` in `~/.devtools-aliases.sh`) for `aksc`, `aksup` and `aksx`.
+(The shell inside the toolbox reads a `~/.devtools-aliases.sh` of its own, kept on the volume. It is
+not the file in your home folder.)
 
 Two things bash does differently. **History:** bash cannot draw a grey suggestion while you type, so
 the Up and Down arrows search the history for what you have typed instead (type `kgp`, press Up). Only
@@ -533,6 +535,8 @@ latest result). It runs three jobs:
     line `setup.sh` writes and types like a person: Tab completion through a fake docker, the Up
     arrow finding earlier commands, `-t` reaching docker at a terminal, and the keys coming back
     after `devtools-unload`.
+  - The three bash test scripts run once more inside the official `bash:4.2` and `bash:4.3` images,
+    the oldest bash the scripts promise to work with.
 - **On Windows**: all three PowerShell test scripts in Windows PowerShell 5.1 and in PowerShell 7 on
   a Windows runner, with a fake `docker.exe`. Windows runners cannot run Linux containers, so this
   covers the PowerShell side only: 5.1 syntax, parameter binding, native argument passing and
@@ -599,8 +603,11 @@ python3 tests/pty_shell_test.py pwsh -- pwsh -NoLogo                 # PowerShel
 What CI cannot prove: how your corporate proxy and TLS inspection behave, Docker Desktop's
 real Kubernetes (the end-to-end test uses a fake API server on Linux), and how Windows PowerShell
 5.1 behaves at a live prompt (CI has no console there, so the grey suggestions, the Tab menu and
-the Up and Down search are tested with PowerShell 7 and with stand-ins for PSReadLine 2.0). Run
-`Import-DockerDesktopKube` on the laptop for the Kubernetes last mile.
+the Up and Down search are tested with PowerShell 7 and with stand-ins for PSReadLine 2.0). The same
+goes for bash: it is tested on Linux, in Git Bash and on bash 4.2 to 5.3, but not in a live Git Bash
+window (mintty with `winpty`), in a WSL distribution or on a Mac, so those follow the notes in the
+bash section. Run `Import-DockerDesktopKube` (or `devtools-import-kube`) on the laptop for the
+Kubernetes last mile.
 
 ---
 
@@ -681,6 +688,11 @@ switch on your distribution. A `docker.exe` from Windows is not used on purpose.
 container (about a second, longer for `az`). Nothing at all means the answer was empty or late, or
 that the image is older than this feature (`./setup.sh` rebuilds it). Another completion for the
 same command that you registered *after* the toolbox loaded replaces ours; load the toolbox last.
+
+**`$'\r': command not found`, or a `^M` in a "bad interpreter" message.** A script, or your shortcuts
+file, was saved with Windows line endings (CR LF). Convert it with `sed -i 's/\r$//' FILE`, or in
+VS Code click `CRLF` in the status bar and choose `LF`. The files in this repository are kept at LF,
+also when git on Windows checks them out.
 
 **A shortcut such as `kgp` says "command not found" in a script.** Aliases expand only in an
 interactive shell. In a script write the command out, or put `shopt -s expand_aliases` before it.
