@@ -455,26 +455,30 @@ if is_windows; then
   if [ -t 0 ]; then echo "stdin is a terminal"; else echo "stdin is NOT a terminal"; fi
   if [ -t 1 ]; then echo "stdout is a terminal"; else echo "stdout is NOT a terminal"; fi
   echo "winpty=$(type -P winpty)"
+  echo "docker=$(type -P docker.exe)"
+  echo "DEVTOOLS_SH=$DEVTOOLS_SH"
+  echo "PATH=$PATH"
 } > "$RESULTS/env.txt" 2>&1
 cd "$WORK" || exit 1
 # What the real winpty hands to the program it starts (INFO only).
 winpty -Xallow-non-tty -Xplain "$BASH" "$SHOWARGS" /work devtools-home:/root --flag=/path plain > "$RESULTS/winpty-args.txt" 2>&1
 export DEVTOOLS_WINPTY=1
-. "$DEVTOOLS_SH"
+. "$DEVTOOLS_SH" 2> "$RESULTS/err-source.txt"
+echo "source rc=$?, kubectx is: $(type -t kubectx)" >> "$RESULTS/env.txt"
 export DOCKER_ARGS_FILE=$RESULTS/args-kubectx.txt
-kubectx
+kubectx 2> "$RESULTS/err-kubectx.txt"
 echo "rc=$?" > "$RESULTS/rc-kubectx.txt"
 export DOCKER_ARGS_FILE=$RESULTS/args-snippet.txt
-eval "$SNIPPET"
+eval "$SNIPPET" 2> "$RESULTS/err-snippet.txt"
 export DOCKER_ARGS_FILE=$RESULTS/args-exec.txt
-kubectl exec -it my-pod -- /bin/sh /no/such/file
+kubectl exec -it my-pod -- /bin/sh /no/such/file 2> "$RESULTS/err-exec.txt"
 export DOCKER_ARGS_FILE=$RESULTS/args-fail.txt DOCKER_FORCE_EXIT=3
-az fail
+az fail 2> "$RESULTS/err-fail.txt"
 echo "rc=$?" > "$RESULTS/rc-fail.txt"
 echo done > "$RESULTS/done.txt"
 EOF
     export RESULTS WORK SNIPPET SHOWARGS="$TMP_POSIX/showargs.sh"
-    ("$MINTTY_BIN" -w hide -h never /usr/bin/bash --norc "$TMP_POSIX/inner.sh" > /dev/null 2>&1 &)
+    ("$MINTTY_BIN" -w hide -h never -l "$RESULTS/screen.log" /usr/bin/bash --norc "$TMP_POSIX/inner.sh" > /dev/null 2>&1 &)
     for i in $(seq 1 120); do
       if [ -f "$RESULTS/done.txt" ]; then break; fi
       # No sign of the script after 30 seconds: the window did not open.
@@ -482,9 +486,13 @@ EOF
       sleep 1
     done
     echo "INFO  a Git Bash window (mintty) was opened to run the real winpty; what it reported:"
-    for f in env.txt winpty-args.txt; do
-      if [ -f "$RESULTS/$f" ]; then tr -d '\r' < "$RESULTS/$f" | sed "s/^/INFO    $f: /"; else echo "INFO    $f: missing"; fi
+    for f in env.txt winpty-args.txt err-source.txt err-kubectx.txt err-snippet.txt err-exec.txt err-fail.txt; do
+      if [ -s "$RESULTS/$f" ]; then tr -d '\r' < "$RESULTS/$f" | cut -c1-300 | sed "s/^/INFO    $f: /"; fi
     done
+    if [ -f "$RESULTS/screen.log" ]; then
+      echo "INFO    the end of what the window showed:"
+      tr -d '\r' < "$RESULTS/screen.log" | sed 's/\x1b\[[0-9;?]*[A-Za-z]//g; s/\x1b\][^\x07]*\x07//g' | tail -n 25 | cut -c1-200 | sed 's/^/INFO      | /'
+    fi
     if [ ! -f "$RESULTS/done.txt" ]; then
       MSYS2_ARG_CONV_EXCL='*' taskkill /F /IM mintty.exe > /dev/null 2>&1 || true
       check_skip 'docker through the real winpty' 'the Git Bash window did not run its script on this machine'
