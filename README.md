@@ -67,8 +67,10 @@ Language Mode, the wrappers cannot work there: build with `docker compose build`
 
 To undo all of this later, run `uninstall.ps1` (see [Stop and remove it](#stop-and-remove-it-one-command)).
 
-Prefer bash (Git Bash, WSL, Linux, macOS)? Run `./setup.sh` instead; see
-[Using it from bash](#using-it-from-bash-git-bash-wsl-linux-macos).
+Prefer bash (Git Bash, WSL, Linux, macOS)? Run `./setup.sh` instead. The
+[Git Bash walkthrough](#step-by-step-in-git-bash-on-windows) goes through it one step at a time.
+A few helper commands are named differently in the two shells, and a command typed in the wrong
+one fails: see [PowerShell or bash: which commands go where](#powershell-or-bash-which-commands-go-where).
 
 The manual steps, one at a time:
 
@@ -129,6 +131,8 @@ helm upgrade --install myapp ./chart
 flux get kustomizations
 ```
 
+These lines are typed the same way in bash.
+
 Your current directory is mounted at `/work` inside the container, so file-based
 commands (`terraform`, `kubectl apply -f`, `helm ./chart`) act on the folder
 you're in. For a full interactive shell in the toolbox:
@@ -148,6 +152,34 @@ Both `az` and `kubectl` share the same `/root` volume, so the kubeconfig written
 by `get-credentials` and the AAD token cache from `kubelogin` are right there for
 every later `kubectl` call.
 
+## PowerShell or bash: which commands go where
+
+PowerShell and bash run the same toolbox: the same image, the same volume, the same logins. The
+tool names (`az`, `kubectl`, `terraform` ...) and the shortcuts (`k`, `kgp`, `tfp`, `azl` ...) are
+typed the same way in both. A few helper commands are named differently, and each shell only knows
+its own. The prompt tells you which one you are in:
+
+| | PowerShell (Windows PowerShell 5.1 or 7) | bash (Git Bash, WSL, Linux, macOS) |
+| --- | --- | --- |
+| The prompt looks like | `PS C:\Users\you>` | `you@PC MINGW64 ~` in Git Bash, `you@host:~$` elsewhere |
+| Set it up, once | `powershell -NoProfile -ExecutionPolicy Bypass -File .\setup.ps1` | `./setup.sh` |
+| Is `az` the toolbox's? | `Get-Command az` (`CommandType` says `Function`) | `type az` (says `az is a function`) |
+| Image, volume, tools | `Get-DevToolsInfo` | `devtools-info` |
+| List the shortcuts | `Get-DevToolsAlias` or `Get-DevToolsAlias 'kg*'` | `devtools-alias` or `devtools-alias 'kg*'` |
+| Import Docker Desktop's Kubernetes | `Import-DockerDesktopKube` | `devtools-import-kube` |
+| A shell inside the toolbox | `dev` | `dev` |
+| Your own shortcuts | `~/.devtools-aliases.ps1` | `~/.devtools-aliases.sh` |
+| Switch the tools off in this window | `Remove-Module Devtools` | `devtools-unload` |
+| Remove it for good | `.\uninstall.ps1` | `./uninstall.sh` |
+
+A command from the other column fails with an error that looks like a broken install, but nothing
+is broken.
+`devtools-alias` typed in PowerShell says *not recognized as the name of a cmdlet*, and
+`Get-DevToolsAlias` typed in bash says *command not found*. `type az` in PowerShell says *Cannot find
+path 'C:\Users\you\az'*, because there `type` is short for `Get-Content` and it looks for a file
+called `az`. If `Get-DevToolsAlias` is not recognized in PowerShell either, see
+[Troubleshooting](#troubleshooting).
+
 ## Using it from bash (Git Bash, WSL, Linux, macOS)
 
 The same toolbox for bash. If Git for Windows is installed, Git Bash is the natural place for it on
@@ -156,9 +188,87 @@ this laptop. `az`, `kubectl`, `terraform`, `flux`, `helm`, `kustomize`, `azd`, `
 name that is installed (`command az` still reaches the installed one). The image and the volume with
 your logins are the ones PowerShell uses: log in from either, it shows in both.
 
-```bash
-./setup.sh              # or: bash setup.sh
-```
+### Step by step in Git Bash on Windows
+
+Git Bash comes with Git for Windows. If neither Git nor WSL is installed on the PC, use the
+PowerShell version: nothing in the toolbox needs bash.
+
+1. **Unzip the project**, for example to `C:\Users\<you>\devtool` (right-click the zip, *Extract
+   All*).
+2. **Start Docker Desktop** and wait until it says "Engine running". It has to use Linux
+   containers, which is the default.
+3. **Open Git Bash in the project folder.** In File Explorer open the folder, right-click an empty
+   spot and choose *Open Git Bash here* (on Windows 11 it is under *Show more options*). Without
+   that menu entry, start Git Bash from the Start menu and `cd` there. In bash `C:\` is written
+   `/c/`, and the slashes lean the other way:
+   ```bash
+   cd /c/Users/<you>/devtool
+   ```
+   `~` is your Windows user folder, so a folder in Downloads is `cd ~/Downloads/devtool`. Put quotes
+   around a path that has a space in it: `cd "/c/Users/<you>/my tools/devtool"`.
+4. **Run the setup.**
+   ```bash
+   ./setup.sh
+   ```
+   If that says "Permission denied", run `bash setup.sh`. The first build takes a few minutes. If
+   you already ran `setup.ps1` the image exists and this step is quick. You should see something
+   like this (the versions and the times differ):
+   ```
+   DevOps toolbox setup  (/c/Users/<you>/devtool)
+
+   == 1/6  Docker
+     OK    Docker engine 28.0.4, Linux containers
+
+   == 2/6  Settings (.env)
+     OK    created .env from .env.example (edit it to set a proxy or pin tool versions)
+
+   == 3/6  Build the image (the first build takes a few minutes)
+     OK    image devtools:latest built in 148s
+
+   == 4/6  bash startup file
+     OK    added the devtools.sh line to /c/Users/<you>/.bashrc
+     OK    /c/Users/<you>/.bash_profile now loads ~/.bashrc, so login shells (Git Bash windows, ...) get the toolbox too
+
+   == 5/6  Load the wrappers
+     OK    az, kubectl, terraform, flux, helm, kustomize, azd, gh, kubectx, kubens and dev now run in the container
+     OK    38 shortcuts: k, kgp, tfp, azl, aksx ...  (devtools-alias lists them all)
+     OK    made a file for your own shortcuts: /c/Users/<you>/.devtools-aliases.sh
+     OK    Tab completion for az, kubectl, terraform, helm, flux ... (the real tool answers from the container, ...)
+     OK    history: type the start of a command, then Up or Down finds it
+
+   == 6/6  Verify every tool (one container per tool)
+     OK    az         azure-cli                         2.91.0
+     OK    kubectl    Client Version: v1.31.4
+     OK    terraform  Terraform v1.16.5
+     ...
+     OK    complete   Tab completion helper is in the image
+
+   All set.
+   ```
+   Near the end it asks two questions, each `[y/N]` (Enter means no): sign in to Azure now, and
+   import Docker Desktop's Kubernetes context now. Both can wait: step 6 shows the sign-in, and
+   `devtools-import-kube` does the import whenever you like. To answer them up front, run
+   `./setup.sh --login --import-kube`; to never be asked, `./setup.sh --no-prompt`.
+5. **Open a new Git Bash window.** A script cannot load anything into the window it was started
+   from. The new window loads the toolbox from `~/.bashrc` (setup also made sure Git Bash reads
+   that file). To use it in the current window instead, run the line setup printed at the end, for
+   example `. '/c/Users/<you>/devtool/devtools.sh'`.
+6. **Check it.**
+   ```bash
+   type az                       # az is a function
+   devtools-info                 # the image, the volume, the tools
+   devtools-alias                # the shortcuts
+   az login --use-device-code    # sign in (the shortcut is azl); the token stays in the volume
+   ```
+   `type az` has to say `az is a function`. If it says `az is /c/...` or `not found`, the toolbox
+   is not loaded in this window: open a new one, or run the line from step 5.
+
+In Git Bash `~` is your Windows user folder (`echo ~` shows it; some company set-ups point it
+elsewhere), so `~/.bashrc` is `C:\Users\<you>\.bashrc` and your own shortcuts file,
+`~/.devtools-aliases.sh`, is next to it. Your logins live in the Docker volume `devtools-home`,
+which PowerShell uses too, so you can sign in from either shell.
+
+### What setup.sh does, and its options
 
 Same steps as `setup.ps1`, in the same order: checks that Docker runs Linux containers, makes `.env`,
 builds the image, adds one line to `~/.bashrc` (a `.bak` copy is saved when it has to change an
@@ -182,17 +292,15 @@ into the terminal it was started from, so open a **new** terminal afterwards, or
 
 Exit code: `0` all good, `1` setup could not finish, `2` setup finished but something above failed.
 
-What is the same as in PowerShell, and what is called differently:
+### What is called differently from PowerShell
 
-| PowerShell | bash |
-| --- | --- |
-| `az`, `kubectl`, `terraform` ... | the same names, as shell functions |
-| `dev` | `dev` (zsh inside the toolbox; `dev bash` for bash) |
-| `Get-DevToolsInfo` | `devtools-info` |
-| `Get-DevToolsAlias` | `devtools-alias` (`devtools-alias 'kg*'` filters, `--count` counts) |
-| `Import-DockerDesktopKube` | `devtools-import-kube [CONTEXT] [KUBECONFIG]` |
-| `Remove-Module Devtools` | `devtools-unload` |
-| `~/.devtools-aliases.ps1` | `~/.devtools-aliases.sh` (aliases or functions; read last, so it wins) |
+The tools and the shortcuts are typed the same way. The helper commands have bash names:
+`devtools-info`, `devtools-alias`, `devtools-import-kube [CONTEXT] [KUBECONFIG]` and
+`devtools-unload`. They are listed next to their PowerShell names in
+[PowerShell or bash](#powershell-or-bash-which-commands-go-where). `devtools-alias 'kg*'` filters
+the list and `devtools-alias --count` counts it. `dev` opens zsh inside the toolbox (`dev bash` for
+bash). Your own shortcuts go in `~/.devtools-aliases.sh`: aliases or functions, read last, so it
+wins.
 
 The shortcuts are the same list (`scripts/shell/aliases.sh` is the file both the toolbox shell and
 your bash read), and they are aliases, so `kgp -n kube-system` runs `kubectl get pods -n kube-system`
@@ -668,10 +776,26 @@ it. The warning names the file and the error; fix that line, or move the file aw
 **`az login` opens nothing / hangs.** Use `az login --use-device-code`. The
 container has no browser, so the normal interactive login can't work.
 
+**In PowerShell, `devtools-alias` is "not recognized" and `type az` says "Cannot find path".**
+Those are bash commands. In PowerShell write `Get-DevToolsAlias` and `Get-Command az` (there `type`
+is short for `Get-Content`, which looks for a file called `az`). Every pair is in
+[PowerShell or bash](#powershell-or-bash-which-commands-go-where). If `Get-DevToolsAlias` is not
+recognized either, your profile loads an older copy of the module, from before the shortcuts were
+added. Run `setup.ps1` again from the newest project folder and open a new PowerShell window.
+
+**In Git Bash, `Get-DevToolsAlias` or `Get-Command` says "command not found".** The other way round:
+those are PowerShell commands. Use `devtools-alias` and `type az`.
+
 **A new Git Bash (or macOS Terminal) window has no tools, but `. ~/.bashrc` fixes it.** That window
 starts a login shell, which reads `~/.bash_profile` and not `~/.bashrc`. `setup.sh` adds a line to
 your login file that loads `~/.bashrc`; if you have since replaced that file, put this in it:
 `[ -r ~/.bashrc ] && . ~/.bashrc`.
+
+**`./setup.sh` says "Permission denied".** Run it as `bash setup.sh`.
+
+**`cd C:\Users\you\devtool` says "No such file or directory" in Git Bash.** Bash reads a backslash as
+an escape and drops it. Write `cd /c/Users/you/devtool`, or put the Windows form in quotes with
+forward slashes: `cd "C:/Users/you/devtool"`.
 
 **In Git Bash, `az login` (or `dev`) says "the input device is not a TTY".** The plain Git Bash
 window (mintty) cannot hand its terminal to `docker.exe`. `devtools.sh` goes through `winpty` there
