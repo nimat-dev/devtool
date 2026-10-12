@@ -459,10 +459,11 @@ if [ -t 1 ]; then echo "stdout is a terminal" >> "$RESULTS/env.txt"; else echo "
 } >> "$RESULTS/env.txt" 2>&1
 cd "$WORK" || exit 1
 # What the real winpty hands to the program it starts (INFO only).
-winpty -Xallow-non-tty -Xplain "$BASH" "$SHOWARGS" /work devtools-home:/root --flag=/path plain > "$RESULTS/winpty-args.txt" 2>&1
-export DEVTOOLS_WINPTY=1
+"$REAL_WINPTY" -Xallow-non-tty -Xplain "$BASH" "$SHOWARGS" /work devtools-home:/root --flag=/path plain > "$RESULTS/winpty-args.txt" 2>&1
+# Nothing is forced from here on: whether winpty is used is decided by devtools.sh, as for a person.
 . "$DEVTOOLS_SH" 2> "$RESULTS/err-source.txt"
 echo "source rc=$?, kubectx is: $(type -t kubectx)" >> "$RESULTS/env.txt"
+devtools-info > "$RESULTS/info.txt" 2>&1
 export DOCKER_ARGS_FILE=$RESULTS_NATIVE/args-kubectx.txt
 kubectx 2> "$RESULTS/err-kubectx.txt"
 echo "rc=$?" > "$RESULTS/rc-kubectx.txt"
@@ -476,8 +477,13 @@ echo "rc=$?" > "$RESULTS/rc-fail.txt"
 echo done > "$RESULTS/done.txt"
 EOF
     RESULTS_NATIVE=$(to_native "$RESULTS")      # docker.exe is native code: it needs the Windows form
-    export RESULTS RESULTS_NATIVE WORK SNIPPET SHOWARGS="$TMP_POSIX/showargs.sh"
-    ("$MINTTY_BIN" -w hide -h never -l "$RESULTS/screen.log" /usr/bin/bash --norc "$TMP_POSIX/inner.sh" > /dev/null 2>&1 &)
+    # A winpty that notes its arguments in WINPTY_LOG_FILE and then runs the real one.
+    mkdir -p "$TMP_POSIX/spy"
+    printf '#!/usr/bin/env bash\necho "$*" >> "$WINPTY_LOG_FILE"\nexec "$REAL_WINPTY" "$@"\n' > "$TMP_POSIX/spy/winpty"
+    chmod +x "$TMP_POSIX/spy/winpty"
+    rm -f "$WINPTY_LOG"
+    export RESULTS RESULTS_NATIVE WORK SNIPPET REAL_WINPTY SHOWARGS="$TMP_POSIX/showargs.sh"
+    (PATH="$TMP_POSIX/spy:$PATH" "$MINTTY_BIN" -w hide -h never -l "$RESULTS/screen.log" /usr/bin/bash --norc "$TMP_POSIX/inner.sh" > /dev/null 2>&1 &)
     for i in $(seq 1 120); do
       if [ -f "$RESULTS/done.txt" ]; then break; fi
       # No sign of the script after 30 seconds: the window did not open.
@@ -489,8 +495,11 @@ EOF
       if [ -s "$RESULTS/$f" ]; then tr -d '\r' < "$RESULTS/$f" | cut -c1-300 | sed "s/^/INFO    $f: /"; fi
     done
     if [ -f "$RESULTS/screen.log" ]; then
-      echo "INFO    the end of what the window showed:"
-      tr -d '\r' < "$RESULTS/screen.log" | sed 's/\x1b\[[0-9;?]*[A-Za-z]//g; s/\x1b\][^\x07]*\x07//g' | tail -n 25 | cut -c1-200 | sed 's/^/INFO      | /'
+      screen=$(tr -d '\r' < "$RESULTS/screen.log" | sed 's/\x1b\[[0-9;?]*[A-Za-z]//g; s/\x1b\][^\x07]*\x07//g' | tail -n 25 | cut -c1-200)
+      if [ -n "${screen//[[:space:]]/}" ]; then
+        echo "INFO    the end of what the window showed:"
+        printf '%s\n' "$screen" | sed 's/^/INFO      | /'
+      fi
     fi
     if [ ! -f "$RESULTS/done.txt" ]; then
       MSYS2_ARG_CONV_EXCL='*' taskkill /F /IM mintty.exe > /dev/null 2>&1 || true
@@ -499,6 +508,9 @@ EOF
       rargs() { tr -d '\r' < "$RESULTS/$1" | tr '\n' '|' | sed 's/|$//'; }
       check_eq 'real winpty in mintty: docker.exe gets a terminal and every argument as typed' "$(rargs args-kubectx.txt)" "$BASE_T|kubectx"
       check_eq 'real winpty in mintty: and kubectx succeeds' "$(tr -d '\r' < "$RESULTS/rc-kubectx.txt")" 'rc=0'
+      check_has 'real winpty in mintty: devtools.sh chose winpty by itself (TERM_PROGRAM=mintty)' "$(tr -d '\r' < "$RESULTS/info.txt")" 'Terminal     winpty'
+      check_has 'real winpty in mintty: it was started with the helper script' "$(winpty_seen)" 'devtools-pty-run.sh'
+      check_lacks 'real winpty in mintty: and was not shown the docker arguments' "$(winpty_seen)" ' -w '
       check_eq 'real winpty in mintty: awkward arguments (quotes, spaces, empty, glob, /paths) arrive untouched' "$(rargs args-snippet.txt)" \
         "$BASE_T|kubectl|patch|deploy|x|-p|{\"a\":\"b c\"}||*|/subscriptions/x|--flag=/path|~|\$HOME|it's|two  spaces|-o|jsonpath={.items[*].metadata.name}"
       check_eq 'real winpty in mintty: kubectl exec with a path' "$(rargs args-exec.txt)" "$BASE_T|kubectl|exec|-it|my-pod|--|/bin/sh|/no/such/file"

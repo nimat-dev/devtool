@@ -659,9 +659,10 @@ latest result). It runs three jobs:
   profile folders of both PowerShell editions are tested (and put back afterwards). The three bash
   test scripts run there too, in Git Bash against the fake `docker.exe`, which is what proves that
   Git Bash does not rewrite `/work` or `/subscriptions/...` and that the folder is mounted in its
-  Windows form. When the Git for Windows on the runner has a `winpty`, the same tests also run
-  docker through the real one (started with `-Xallow-non-tty`, as there is no terminal) and print
-  what it did to a few arguments.
+  Windows form. The runner also opens a hidden Git Bash window (mintty, which gives `winpty` the
+  terminal it needs), and in it the tests call `kubectx`, `kubectl exec` and a few awkward argument
+  lists through Git's real `winpty`: `docker.exe` must get `-w /work` and every other argument as
+  typed, and the exit code must come back. They also print what `winpty` did to a few arguments.
 - **Build the image and test it** (Linux): a real `docker build`, then
   - `tests/smoke.sh` runs inside the image: every tool starts and reports the version pinned in
     the Dockerfile, the entrypoint extends `NO_PROXY`, the Terraform plugin cache is set up, and
@@ -721,9 +722,10 @@ What CI cannot prove: how your corporate proxy and TLS inspection behave, Docker
 real Kubernetes (the end-to-end test uses a fake API server on Linux), and how Windows PowerShell
 5.1 behaves at a live prompt (CI has no console there, so the grey suggestions, the Tab menu and
 the Up and Down search are tested with PowerShell 7 and with stand-ins for PSReadLine 2.0). The same
-goes for bash: it is tested on Linux, in Git Bash and on bash 4.2 to 5.3, but not in a live Git Bash
-window (mintty with `winpty`, which is only played, see above), in a WSL distribution or on a Mac, so
-those follow the notes in the bash section. Run `Import-DockerDesktopKube` (or `devtools-import-kube`) on the laptop for the
+goes for bash: it is tested on Linux, in Git Bash (also in a real mintty window with Git's real
+`winpty`, but one that no person types into) and on bash 4.2 to 5.3, always against a fake docker.
+A WSL distribution, a Mac and a live Git Bash window with Docker Desktop behind it follow the notes
+in the bash section. Run `Import-DockerDesktopKube` (or `devtools-import-kube`) on the laptop for the
 Kubernetes last mile.
 
 ---
