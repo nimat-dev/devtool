@@ -3,6 +3,7 @@
 
     tests/pty_shell_test.py SHELL [--full | --tools az,kubectl,helm] -- COMMAND...
     tests/pty_shell_test.py pwsh [--module Devtools.psm1] -- pwsh -NoLogo
+    tests/pty_shell_test.py hostbash [--script devtools.sh] -- bash
 
 SHELL is zsh or bash (it only picks the checks). COMMAND starts that shell, for example
 
@@ -16,6 +17,12 @@ pwsh starts an interactive PowerShell 7 whose profile imports Devtools.psm1, wit
 on the PATH, and checks what a person would see: the Tab menu, Tab completion through the
 container, grey history suggestions, the double dash, and the keys being handed back when the
 module is removed. (Windows PowerShell 5.1 has no pseudo terminal to drive here.)
+
+hostbash starts an interactive bash that loads devtools.sh from its startup file, with a fake docker
+on the PATH, and checks what a person would see: the tools are functions, Tab completion through the
+container (also through a shortcut), the Up arrow searching the history, the terminal being handed to
+docker (-t), the double dash, and the keys being handed back by devtools-unload. DEVTOOLS_NO_READLINE=1
+is checked in a second session.
 
 Prints PASS/FAIL lines and exits 1 on any FAIL.
 """
@@ -294,8 +301,180 @@ def pwsh_checks(command, env, module, args_file):
     return 0 if failures == 0 else 1
 
 
+def run_hostbash(options, command):
+    here = os.path.dirname(os.path.abspath(__file__))
+    script = os.path.join(os.path.dirname(here), "devtools.sh")
+    for i, o in enumerate(options):
+        if o == "--script" and i + 1 < len(options):
+            script = os.path.abspath(options[i + 1])
+
+    work = tempfile.mkdtemp(prefix="devtools-pty-")
+    try:
+        home = os.path.join(work, "home")
+        os.makedirs(home)
+        bindir = os.path.join(work, "bin")
+        os.makedirs(bindir)
+        docker = os.path.join(bindir, "docker")
+        with open(docker, "w") as f:
+            f.write(FAKE_DOCKER)
+        os.chmod(docker, 0o755)
+        args_file = os.path.join(work, "docker-args.txt")
+        # What a person's ~/.bashrc has: the one line setup.sh adds. The Ctrl-X binding is the test's
+        # own: it prints the line being edited, so the checks do not have to read it back from a
+        # redrawn screen.
+        rc = os.path.join(work, "bashrc")
+        with open(rc, "w") as f:
+            f.write("PS1='HB> '\n")
+            f.write("HISTFILE='%s'\n" % os.path.join(work, "history"))
+            f.write("export DEVTOOLS_BASH_ALIASES='%s'\n" % os.path.join(work, "no-aliases.sh"))
+            f.write(". '%s'\n" % script)
+            f.write("bind -x '\"\\C-x\":printf \"BUF[%s]\\n\" \"$READLINE_LINE\"'\n")
+
+        env = dict(os.environ)
+        for name in ("DOCKER_RUN_FILE", "DEVTOOLS_NO_READLINE", "DEVTOOLS_IMAGE", "DEVTOOLS_VOLUME", "TERM_PROGRAM", "AKS_RG", "AKS_NAME"):
+            env.pop(name, None)
+        env.update({
+            "HOME": home,
+            "PATH": bindir + os.pathsep + env.get("PATH", ""),
+            "TERM": "xterm-256color",
+            "INPUTRC": os.path.join(work, "inputrc"),        # none: readline's own defaults
+            "DOCKER_ARGS_FILE": args_file,
+        })
+        open(env["INPUTRC"], "w").close()
+        bash = command + ["--noprofile", "--rcfile", rc, "-i"]
+        if hostbash_checks(bash, env, args_file):
+            # DEVTOOLS_NO_READLINE=1 leaves the arrow keys alone.
+            env["DEVTOOLS_NO_READLINE"] = "1"
+            hostbash_noreadline(bash, env)
+        print()
+        print("ALL SHELL CHECKS PASSED" if failures == 0 else "%d SHELL CHECK(S) FAILED" % failures)
+        return 0 if failures == 0 else 1
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def hostbash_checks(command, env, args_file):
+    t = Term(command, env=env)
+    ready = t.expect(r"HB> ", timeout=30)
+    check("bash starts and shows a prompt", ready, tail(t.buf))
+    if not ready:
+        t.close()
+        return False
+    t.pump(1.0)
+
+    def run(line, pattern, name, timeout=15):
+        t.mark()
+        t.send(line + "\r")
+        check(name, t.expect(pattern, timeout, clean=True), tail(t.buf))
+        t.pump(0.5)
+
+    def line_is(expected, name, timeout=20):
+        ok = False
+        deadline = time.time() + timeout
+        while time.time() < deadline and not ok:
+            t.mark()
+            t.send("\x18")                      # Ctrl-X prints the line being edited
+            ok = t.expect(r"BUF\[" + expected + r"\]", 3)
+        check(name, ok, tail(t.buf))
+        t.send("\x15")                          # Ctrl-U clears the line, and any menu
+        t.pump(0.5)
+
+    def last_args():
+        got = []
+        if os.path.exists(args_file):
+            with open(args_file) as f:
+                got = f.read().split("\n")
+        while got and got[-1] == "":
+            got.pop()
+        return got
+
+    run("type -t az", r"function\r?\n", "az is a function (it shadows an installed az)")
+    run("type -t kgp", r"alias\r?\n", "the shortcut kgp is an alias")
+    run("bind -p | grep -F '\\e[A\"'", r"history-search-backward", "the Up arrow searches the history")
+    run("bind -v | grep show-all", r"show-all-if-ambiguous on", "Tab lists the choices on the first press")
+
+    # --- Tab completion through the container (the fake docker plays the container) ---------------------------
+    t.mark()
+    t.send("kubectl get po\t")
+    t.pump(1.5)
+    line_is(r"kubectl get pods ?", "Tab completes kubectl through the container")
+    t.mark()
+    t.send("kgp --all-nam\t")
+    t.pump(1.5)
+    line_is(r"kgp --all-namespaces ?", "Tab completes the flags of a shortcut (kgp stands for kubectl get pods)")
+    t.mark()
+    t.send("terraform ap\t")
+    t.pump(1.5)
+    line_is(r"terraform apply ?", "Tab completes terraform")
+
+    # --- history search on the arrow keys ---------------------------------------------------------------------
+    if os.path.exists(args_file):
+        os.remove(args_file)
+    run("kgp -n kube-system", r"HB> ", "a shortcut runs from the prompt")
+    want = ["devtools:latest", "kubectl", "get", "pods", "-n", "kube-system"]
+    check("and reaches the container as kubectl get pods -n kube-system", last_args()[-len(want):] == want, repr(last_args()))
+    run("tfp -var x=1", r"HB> ", "another command, to have a history")
+    t.mark()
+    t.send("kgp -n ku\x1b[A")
+    t.pump(0.5)
+    line_is(r"kgp -n kube-system", "the Up arrow finds the earlier command that starts with what you typed")
+    t.mark()
+    t.send("tf\x1b[A")
+    t.pump(0.5)
+    line_is(r"tfp -var x=1", "and the one that starts with tf")
+    t.mark()
+    t.send("\x1b[A\x1b[A")
+    t.pump(0.5)
+    t.send("\x1b[B")
+    t.pump(0.5)
+    line_is(r"kgp -n kube-system|tfp -var x=1", "the Down arrow goes back toward the newer ones")
+
+    # --- the terminal is handed to docker ---------------------------------------------------------------------
+    if os.path.exists(args_file):
+        os.remove(args_file)
+    t.mark()
+    t.send("az account show\r")
+    t.pump(1.5)
+    got = last_args()
+    check("at a terminal docker gets -t (an interactive az login can work)", got[:4] == ["run", "--rm", "-i", "-t"], repr(got))
+
+    # --- the double dash ----------------------------------------------------------------------------------------
+    if os.path.exists(args_file):
+        os.remove(args_file)
+    t.mark()
+    t.send("kex my-pod -- ls -la\r")
+    t.pump(1.5)
+    want = ["devtools:latest", "kubectl", "exec", "-it", "my-pod", "--", "ls", "-la"]
+    check("kex pod -- ls -la reaches the container with the double dash", last_args()[-len(want):] == want, repr(last_args()))
+
+    # --- the keys are handed back ---------------------------------------------------------------------------------
+    run("devtools-unload", r"HB> ", "devtools-unload works")
+    run("type -t az || echo gone", r"gone\r?\n", "after it az is no longer a function")
+    run("bind -p | grep -F '\\e[A\"'", r"previous-history", "and the Up arrow is the plain history again")
+    run("bind -v | grep show-all", r"show-all-if-ambiguous off", "and Tab is as it was")
+
+    t.close()
+    return True
+
+
+def hostbash_noreadline(command, env):
+    t = Term(command, env=env)
+    ready = t.expect(r"HB> ", timeout=30)
+    check("DEVTOOLS_NO_READLINE=1: bash starts", ready, tail(t.buf))
+    if ready:
+        t.pump(1.0)
+        t.mark()
+        t.send("bind -p | grep -F '\\e[A\"'\r")
+        check("DEVTOOLS_NO_READLINE=1: the Up arrow is left alone", t.expect(r"previous-history", 10, clean=True), tail(t.buf))
+        t.pump(0.5)
+        t.mark()
+        t.send("type -t az\r")
+        check("DEVTOOLS_NO_READLINE=1: the tools are still functions", t.expect(r"function", 10, clean=True), tail(t.buf))
+    t.close()
+
+
 def main(argv):
-    if "--" not in argv or len(argv) < 4:
+    if "--" not in argv or len(argv) < 3:
         print(__doc__)
         return 2
     shell = argv[0]
@@ -303,6 +482,8 @@ def main(argv):
     command = argv[argv.index("--") + 1:]
     if shell == "pwsh":
         return run_pwsh(options, command)
+    if shell == "hostbash":
+        return run_hostbash(options, command)
     tools = set()
     if "--full" in options:
         tools = {"kubectl", "helm", "az"}

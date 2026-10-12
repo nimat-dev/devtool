@@ -3,11 +3,11 @@
 ![CI](https://github.com/nimat-dev/devtool/actions/workflows/ci.yml/badge.svg)
 
 One Docker image with every senior-DevOps CLI baked in, plus PowerShell wrappers
-so `az`, `kubectl`, `terraform`, `flux`, `helm`, `kustomize` and `azd` run inside
-the container but feel local. Nothing to install on the host except Docker Desktop,
-which you already have. Credentials and config persist in a named volume, so you
-log in once. Short commands (`k`, `kgp`, `tfp`, `azl` ...), grey suggestions from your
-history and Tab completion come with it, in PowerShell and in the toolbox shell.
+(and bash wrappers for Git Bash, WSL, Linux and macOS) so `az`, `kubectl`, `terraform`, `flux`,
+`helm`, `kustomize` and `azd` run inside the container but feel local. Nothing to install on the
+host except Docker Desktop, which you already have. Credentials and config persist in a named
+volume, so you log in once, from either shell. Short commands (`k`, `kgp`, `tfp`, `azl` ...),
+history suggestions and Tab completion come with it, in PowerShell, in bash and in the toolbox shell.
 
 **Tools included:** Azure CLI, azd, kubectl, kubelogin, Helm, Kustomize, Terraform,
 Flux CLI, AWS CLI v2, GitHub CLI (gh), kubectx/kubens, plus jq, yq, git, ssh, make.
@@ -17,7 +17,8 @@ Flux CLI, AWS CLI v2, GitHub CLI (gh), kubectx/kubens, plus jq, yq, git, ssh, ma
 ## Prerequisites
 
 - Docker Desktop running (WSL2 or Hyper-V backend, either is fine).
-- PowerShell (Windows PowerShell 5.1 or PowerShell 7+).
+- PowerShell (Windows PowerShell 5.1 or PowerShell 7+), or bash 4.2 or newer (Git Bash, WSL, Linux,
+  macOS with a newer bash). The two work side by side and share the image and the logins.
 - No admin rights or other installs required.
 
 ## Quick start: one command
@@ -65,6 +66,9 @@ Language Mode, the wrappers cannot work there: build with `docker compose build`
 `docker compose run --rm dev` for a shell inside the toolbox.
 
 To undo all of this later, run `uninstall.ps1` (see [Stop and remove it](#stop-and-remove-it-one-command)).
+
+Prefer bash (Git Bash, WSL, Linux, macOS)? Run `./setup.sh` instead; see
+[Using it from bash](#using-it-from-bash-git-bash-wsl-linux-macos).
 
 The manual steps, one at a time:
 
@@ -144,10 +148,93 @@ Both `az` and `kubectl` share the same `/root` volume, so the kubeconfig written
 by `get-credentials` and the AAD token cache from `kubelogin` are right there for
 every later `kubectl` call.
 
+## Using it from bash (Git Bash, WSL, Linux, macOS)
+
+The same toolbox for bash. If Git for Windows is installed, Git Bash is the natural place for it on
+this laptop. `az`, `kubectl`, `terraform`, `flux`, `helm`, `kustomize`, `azd`, `gh`, `kubectx` and
+`kubens` become shell functions that run the container, so they win over any program of the same
+name that is installed (`command az` still reaches the installed one). The image and the volume with
+your logins are the ones PowerShell uses: log in from either, it shows in both.
+
+```bash
+./setup.sh              # or: bash setup.sh
+```
+
+Same steps as `setup.ps1`, in the same order: checks that Docker runs Linux containers, makes `.env`,
+builds the image, adds one line to `~/.bashrc` (a `.bak` copy is saved when it has to change an
+older line), loads the wrappers, makes `~/.devtools-aliases.sh` for your own shortcuts (never
+overwritten) and runs every tool once. Git Bash windows and macOS Terminal start *login* shells,
+which read `~/.bash_profile` and not `~/.bashrc`, so if your login file does not load `~/.bashrc`
+setup adds the two lines that do. It is safe to run again.
+
+The line it adds to `~/.bashrc` is `. '/path/to/devtool/devtools.sh'`. A script cannot load anything
+into the terminal it was started from, so open a **new** terminal afterwards, or run that line.
+
+| Option | What it does |
+| --- | --- |
+| `--skip-build` | the image is already built |
+| `--skip-profile` | leave your startup files alone |
+| `--skip-verify` | skip the tool checks |
+| `--login` | run `az login --use-device-code` at the end without asking |
+| `--import-kube` | import Docker Desktop's Kubernetes context at the end without asking |
+| `--no-prompt` | never ask a question (for automation) |
+| `--rc-file FILE` | edit this file instead of `~/.bashrc` |
+
+Exit code: `0` all good, `1` setup could not finish, `2` setup finished but something above failed.
+
+What is the same as in PowerShell, and what is called differently:
+
+| PowerShell | bash |
+| --- | --- |
+| `az`, `kubectl`, `terraform` ... | the same names, as shell functions |
+| `dev` | `dev` (zsh inside the toolbox; `dev bash` for bash) |
+| `Get-DevToolsInfo` | `devtools-info` |
+| `Get-DevToolsAlias` | `devtools-alias` (`devtools-alias 'kg*'` filters, `--count` counts) |
+| `Import-DockerDesktopKube` | `devtools-import-kube [CONTEXT] [KUBECONFIG]` |
+| `Remove-Module Devtools` | `devtools-unload` |
+| `~/.devtools-aliases.ps1` | `~/.devtools-aliases.sh` (aliases or functions; read last, so it wins) |
+
+The shortcuts are the same list (`scripts/shell/aliases.sh` is the file both the toolbox shell and
+your bash read), and they are aliases, so `kgp -n kube-system` runs `kubectl get pods -n kube-system`
+and `kex web -- sh` keeps its `--`. Aliases only expand in an interactive shell; in a script call the
+tool itself, or run `shopt -s expand_aliases` first. Set `AKS_RG` and `AKS_NAME` once (for example
+`export AKS_RG=my-rg AKS_NAME=my-cluster` in `~/.devtools-aliases.sh`) for `aksc`, `aksup` and `aksx`.
+
+Two things bash does differently. **History:** bash cannot draw a grey suggestion while you type, so
+the Up and Down arrows search the history for what you have typed instead (type `kgp`, press Up). Only
+the default arrow bindings are replaced; a binding of your own is left alone. The shell inside the
+toolbox (`dev`) has the grey suggestions. **Tab completion:** `az`, `kubectl`, `terraform`, `helm`,
+`flux`, `kustomize`, `azd` and `gh`, and the shortcuts for them, complete through the real tool in a
+short-lived container, about a second per press (a few for `az`), exactly as in PowerShell. The first
+Tab lists the choices when there are several.
+
+On Git Bash, `devtools.sh` stops Git Bash from rewriting `/work`, `/subscriptions/...` or any
+argument that starts with a slash into a Windows path, and mounts the current folder in the form
+Docker for Windows wants (`C:/Users/you/project`). In the plain Git Bash window (mintty) a program
+that needs a terminal, such as `az login`, only works through `winpty`, which Git for Windows ships;
+`devtools.sh` uses it there automatically. The Windows Terminal and the VS Code terminal do not need
+it. In WSL, Docker Desktop must have WSL integration switched on for your distribution; Docker
+Desktop's kubeconfig is the Windows one, so use
+`devtools-import-kube docker-desktop /mnt/c/Users/NAME/.kube/config` there.
+
+| Variable | Effect |
+| --- | --- |
+| `DEVTOOLS_IMAGE`, `DEVTOOLS_VOLUME` | the image and the volume (defaults `devtools:latest`, `devtools-home`) |
+| `DEVTOOLS_BASH_ALIASES` | the file for your own shortcuts (default `~/.devtools-aliases.sh`) |
+| `DEVTOOLS_NO_READLINE` | `1` leaves the arrow keys and readline settings alone |
+| `DEVTOOLS_WINPTY` | `auto` (default), `1` or `0`: whether docker runs through `winpty` in Git Bash |
+| `AKS_RG`, `AKS_NAME` | your cluster, for `aksc`, `aksup`, `aksx`; `dev` hands them to the shell inside |
+
+Set them before the line in `~/.bashrc` that loads the toolbox. `devtools.sh` needs bash 4.2 or
+newer: Git Bash and every current Linux have it; the bash that macOS ships is 3.2, so install a
+newer one (`brew install bash`). zsh is not supported by the host script; `dev` gives you zsh inside
+the toolbox. To undo it, run `./uninstall.sh` (see [Stop and remove it](#stop-and-remove-it-one-command)).
+
 ## Shortcuts, history suggestions and Tab completion
 
 All of this loads with the module, so `setup.ps1` turns it on and `uninstall.ps1` turns it off.
-The parts that run inside the toolbox come with the image, which `setup.ps1` rebuilds.
+The parts that run inside the toolbox come with the image, which `setup.ps1` rebuilds. (This
+section is about PowerShell; bash has the same shortcuts and completion, see above.)
 
 ### Shortcuts
 
@@ -397,6 +484,13 @@ and the window are cleaned first) and is safe to run again.
 Exit code: `0` done, `1` could not run (Constrained Language Mode), `2` finished but something
 above failed. For everything at once: `.\uninstall.ps1 -RemoveImage -RemoveVolume`.
 
+From bash it is `./uninstall.sh`, with the same steps and the same exit codes. It takes the
+`devtools.sh` line (and the login-shell line `setup.sh` added) out of `~/.bashrc`, `~/.bash_profile`,
+`~/.bash_login` and `~/.profile`, saving a `.bak` copy of each file it changes, and leaves the rest of
+those files byte for byte as they were. Its options are `--remove-image`, `--remove-volume`,
+`--force`, `--skip-profile`, `--no-prompt` and `--rc-file FILE`. A terminal that is open keeps the
+functions until you close it or run `devtools-unload` in it. Your `~/.devtools-aliases.sh` is kept.
+
 PowerShell windows that were already open keep the wrappers until you close them or run
 `Remove-Module Devtools` in them. Only the default names are handled: the image `devtools:latest`
 and the volumes `devtools-home` (used by the wrappers) and `devtools_devtools-home` (the one
@@ -408,9 +502,9 @@ you chose with `DEVTOOLS_IMAGE` or `DEVTOOLS_VOLUME` is left alone.
 Every push runs `.github/workflows/ci.yml` on GitHub's runners (the badge at the top shows the
 latest result). It runs three jobs:
 
-- **Lint and PowerShell tests** (Linux): hadolint on the Dockerfile, shellcheck on every shell
-  script, `docker compose config`, and three PowerShell test scripts that run against a fake
-  `docker`:
+- **Lint and wrapper tests** (Linux): hadolint on the Dockerfile, shellcheck on every shell
+  script, `docker compose config`, and the test scripts for the PowerShell and the bash wrappers,
+  which run against a fake `docker`:
   - `tests/Test-Devtools.ps1` runs the real `Devtools.psm1` and checks the exact `docker run`
     line each wrapper produces (mounts, working directory, `-out` / `-o` pass-through, exit
     codes, env overrides), every shortcut against its table, the bare `--` that PowerShell
@@ -428,11 +522,25 @@ latest result). It runs three jobs:
     profile line `setup.ps1` writes, then types like a person: the Tab menu, Tab completion
     through a fake docker, grey suggestions from the history, `kex pod -- ls -la`, and the keys
     coming back when the module is removed.
-- **PowerShell on Windows**: all three test scripts in Windows PowerShell 5.1 and in PowerShell 7 on
+  - `tests/test-devtools-sh.sh` runs the real `devtools.sh` in a child bash and checks the exact
+    `docker run` line each function produces (volume, current folder, image, `dev` and the AKS
+    variables, arguments with quotes, spaces and slashes, exit codes), the shortcuts, your own
+    shortcuts file (including a broken one), Tab completion against canned answers, and that
+    `devtools-unload` leaves nothing behind. `tests/test-setup-sh.sh` and `tests/test-uninstall-sh.sh`
+    do for `setup.sh` and `uninstall.sh` what the PowerShell scripts above do for theirs, including
+    that `~/.bashrc` comes back byte for byte after setup and uninstall.
+  - `tests/pty_shell_test.py hostbash` starts an interactive bash in a pseudo terminal with the
+    line `setup.sh` writes and types like a person: Tab completion through a fake docker, the Up
+    arrow finding earlier commands, `-t` reaching docker at a terminal, and the keys coming back
+    after `devtools-unload`.
+- **On Windows**: all three PowerShell test scripts in Windows PowerShell 5.1 and in PowerShell 7 on
   a Windows runner, with a fake `docker.exe`. Windows runners cannot run Linux containers, so this
   covers the PowerShell side only: 5.1 syntax, parameter binding, native argument passing and
   Windows paths. The runner is thrown away after the job, so it is also where the real default
-  profile folders of both PowerShell editions are tested (and put back afterwards).
+  profile folders of both PowerShell editions are tested (and put back afterwards). The three bash
+  test scripts run there too, in Git Bash against the fake `docker.exe`, which is what proves that
+  Git Bash does not rewrite `/work` or `/subscriptions/...` and that the folder is mounted in its
+  Windows form.
 - **Build the image and test it** (Linux): a real `docker build`, then
   - `tests/smoke.sh` runs inside the image: every tool starts and reports the version pinned in
     the Dockerfile, the entrypoint extends `NO_PROXY`, the Terraform plugin cache is set up, and
@@ -447,10 +555,24 @@ latest result). It runs three jobs:
     the volume), that kubectx and kubens work against it, that a re-import is idempotent, and that
     a dead corporate proxy cannot swallow the host traffic.
   - `setup.ps1` runs for real against the Docker engine of the runner (build, profile, every tool
-    in its own container), and then once more to prove a second run changes nothing.
+    in its own container), and then once more to prove a second run changes nothing. So does
+    `setup.sh`, followed by a new bash that loads the line it wrote: the tools are the container's,
+    standard input and the current folder reach the container, and Tab completion gets real answers
+    from kubectl, terraform, helm and az.
   - `uninstall.ps1` runs for real against the same engine, with a container still running from
     the image and both volumes present: it stops the container and takes the profile line out,
     keeps the image and the logins, and then with `-RemoveImage -RemoveVolume -Force` deletes them.
+    `uninstall.sh` does the first part (container and startup file) the same way.
+
+Run the bash tests on your own machine (no Docker needed, and your own `~/.bashrc` is not touched;
+Linux, macOS or Git Bash):
+
+```bash
+bash tests/test-devtools-sh.sh
+bash tests/test-setup-sh.sh
+bash tests/test-uninstall-sh.sh
+python3 tests/pty_shell_test.py hostbash -- bash                     # Linux or macOS
+```
 
 Run the PowerShell tests on your own machine (no Docker needed, and your own profile is not touched):
 
@@ -539,6 +661,30 @@ it. The warning names the file and the error; fix that line, or move the file aw
 **`az login` opens nothing / hangs.** Use `az login --use-device-code`. The
 container has no browser, so the normal interactive login can't work.
 
+**A new Git Bash (or macOS Terminal) window has no tools, but `. ~/.bashrc` fixes it.** That window
+starts a login shell, which reads `~/.bash_profile` and not `~/.bashrc`. `setup.sh` adds a line to
+your login file that loads `~/.bashrc`; if you have since replaced that file, put this in it:
+`[ -r ~/.bashrc ] && . ~/.bashrc`.
+
+**In Git Bash, `az login` (or `dev`) says "the input device is not a TTY".** The plain Git Bash
+window (mintty) cannot hand its terminal to `docker.exe`. `devtools.sh` goes through `winpty` there
+by itself; if that was switched off (`DEVTOOLS_WINPTY=0`) or `winpty` is missing, use the Windows
+Terminal or the VS Code terminal, or set `DEVTOOLS_WINPTY=1` and install `winpty`.
+
+**In WSL, `docker was not found on PATH`.** Docker Desktop > Settings > Resources > WSL integration:
+switch on your distribution. A `docker.exe` from Windows is not used on purpose.
+
+**`devtools.sh needs bash 4.2 or newer`.** macOS ships bash 3.2. Install a newer one
+(`brew install bash`) and run `setup.sh` with it, or use `dev` for zsh inside the toolbox.
+
+**Tab does nothing, or is slow, in bash.** Same as in PowerShell: each press asks a short-lived
+container (about a second, longer for `az`). Nothing at all means the answer was empty or late, or
+that the image is older than this feature (`./setup.sh` rebuilds it). Another completion for the
+same command that you registered *after* the toolbox loaded replaces ours; load the toolbox last.
+
+**A shortcut such as `kgp` says "command not found" in a script.** Aliases expand only in an
+interactive shell. In a script write the command out, or put `shopt -s expand_aliases` before it.
+
 **Output looks garbled, or piping/redirection breaks a command.** The wrappers
 only allocate a TTY (`-t`) for genuine interactive use and drop it when output is
 piped or captured, which is correct. If you hit an edge case, run the command
@@ -566,12 +712,16 @@ devtool/
 ├─ uninstall.ps1         # the undo: stop the containers, remove the wrappers (image and logins only on request)
 ├─ Devtools.psm1         # PowerShell wrappers (az/kubectl/terraform/... + dev + Import-DockerDesktopKube),
 │                        # shortcuts, Tab completion, history suggestions
+├─ setup.sh              # the same as setup.ps1, for bash (Git Bash, WSL, Linux, macOS)
+├─ uninstall.sh          # the same as uninstall.ps1, for bash
+├─ devtools.sh           # bash wrappers (the twin of Devtools.psm1): functions, shortcuts, Tab completion,
+│                        # history search; sourced from ~/.bashrc
 ├─ scripts/
 │  ├─ devtools-entrypoint.sh         # keeps Docker Desktop host traffic off the proxy
 │  ├─ import-docker-desktop-kube.sh  # copies the docker-desktop kube context into the toolbox
-│  ├─ devtools-complete.sh           # answers PowerShell's Tab presses with the real tool's completions
+│  ├─ devtools-complete.sh           # answers the Tab presses of PowerShell and host bash with the real tool's completions
 │  └─ shell/                         # the toolbox shell: zshrc, bashrc, aliases.sh, az-completion.sh
-├─ tests/                # smoke test, importer end-to-end test, terminal (pty) tests, PowerShell tests
+├─ tests/                # smoke test, importer end-to-end test, terminal (pty) tests, PowerShell and bash tests
 ├─ .github/workflows/    # CI: lint, build the image, run the tests above
 ├─ certs/                # drop corporate root CA here (optional)
 └─ repos/                # default mount point if REPOS_ROOT is unset

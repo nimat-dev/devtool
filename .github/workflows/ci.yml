@@ -38,7 +38,8 @@ jobs:
           sc="$RUNNER_TEMP/shellcheck-v0.10.0/shellcheck"
           "$sc" --version | sed -n 2p
           "$sc" -s sh scripts/devtools-entrypoint.sh
-          "$sc" -s bash scripts/import-docker-desktop-kube.sh scripts/devtools-complete.sh \
+          "$sc" -s bash devtools.sh setup.sh uninstall.sh \
+            scripts/import-docker-desktop-kube.sh scripts/devtools-complete.sh \
             scripts/shell/aliases.sh scripts/shell/az-completion.sh scripts/shell/bashrc \
             tests/*.sh tests/fakebin/docker
 
@@ -64,6 +65,26 @@ jobs:
         if: ${{ !cancelled() }}
         run: python3 tests/pty_shell_test.py pwsh -- pwsh -NoLogo 2>&1 | tee "$RUNNER_TEMP/pty-pwsh.log"
 
+      - name: devtools.sh tests (the bash wrappers, fake docker)
+        id: bashwrap
+        if: ${{ !cancelled() }}
+        run: bash tests/test-devtools-sh.sh 2>&1 | tee "$RUNNER_TEMP/bash-wrap.log"
+
+      - name: setup.sh tests (fake docker)
+        id: bashsetup
+        if: ${{ !cancelled() }}
+        run: bash tests/test-setup-sh.sh 2>&1 | tee "$RUNNER_TEMP/bash-setup-tests.log"
+
+      - name: uninstall.sh tests (fake docker)
+        id: bashuninstall
+        if: ${{ !cancelled() }}
+        run: bash tests/test-uninstall-sh.sh 2>&1 | tee "$RUNNER_TEMP/bash-uninstall-tests.log"
+
+      - name: bash on your machine in a real terminal (Tab completion, history search, -t)
+        id: ptyhostbash
+        if: ${{ !cancelled() }}
+        run: python3 tests/pty_shell_test.py hostbash -- bash 2>&1 | tee "$RUNNER_TEMP/pty-hostbash.log"
+
       - name: Report results as annotations
         if: always()
         run: |
@@ -71,6 +92,10 @@ jobs:
           tests/ci-annotate.sh "setup.ps1 tests" "${{ steps.setup.outcome }}" "$RUNNER_TEMP/setup-tests.log" '^(PowerShell|--|FAIL|      |ALL|[0-9]+ SETUP)'
           tests/ci-annotate.sh "uninstall.ps1 tests" "${{ steps.uninstall.outcome }}" "$RUNNER_TEMP/uninstall-tests.log" '^(PowerShell|--|FAIL|SKIP|      |ALL|[0-9]+ UNINSTALL)'
           tests/ci-annotate.sh "PowerShell 7 terminal test" "${{ steps.ptypwsh.outcome }}" "$RUNNER_TEMP/pty-pwsh.log" '^(PASS|FAIL|      |ALL|[0-9]+ SHELL)'
+          tests/ci-annotate.sh "devtools.sh tests" "${{ steps.bashwrap.outcome }}" "$RUNNER_TEMP/bash-wrap.log" '^(bash|FAIL|SKIP|      |ALL|[0-9]+ TEST)'
+          tests/ci-annotate.sh "setup.sh tests" "${{ steps.bashsetup.outcome }}" "$RUNNER_TEMP/bash-setup-tests.log" '^(bash|FAIL|SKIP|      |ALL|[0-9]+ TEST)'
+          tests/ci-annotate.sh "uninstall.sh tests" "${{ steps.bashuninstall.outcome }}" "$RUNNER_TEMP/bash-uninstall-tests.log" '^(bash|FAIL|SKIP|      |ALL|[0-9]+ TEST)'
+          tests/ci-annotate.sh "bash terminal test (devtools.sh)" "${{ steps.ptyhostbash.outcome }}" "$RUNNER_TEMP/pty-hostbash.log" '^(PASS|FAIL|      |ALL|[0-9]+ SHELL)'
 
   windows:
     # The wrappers are meant for Windows, where the default shell is Windows PowerShell 5.1.
@@ -101,9 +126,30 @@ jobs:
         if: ${{ !cancelled() }}
         run: ${{ matrix.ps }} -NoProfile -ExecutionPolicy Bypass -File tests/Test-Uninstall.ps1 2>&1 | tee "$RUNNER_TEMP/uninstall-tests.log"
 
+      # The bash side, in Git Bash (the shell of these steps), against a docker.exe that is native
+      # Windows code. That is what makes Git Bash rewrite /work or /subscriptions/x into a Windows
+      # path unless devtools.sh stops it. Once is enough, so only for one of the two PowerShells.
+      - name: devtools.sh tests (Git Bash, fake docker.exe)
+        id: bashwrap
+        if: ${{ !cancelled() && matrix.ps == 'pwsh' }}
+        run: bash tests/test-devtools-sh.sh 2>&1 | tee "$RUNNER_TEMP/bash-wrap.log"
+
+      - name: setup.sh tests (Git Bash, fake docker.exe)
+        id: bashsetup
+        if: ${{ !cancelled() && matrix.ps == 'pwsh' }}
+        run: bash tests/test-setup-sh.sh 2>&1 | tee "$RUNNER_TEMP/bash-setup-tests.log"
+
+      - name: uninstall.sh tests (Git Bash, fake docker.exe)
+        id: bashuninstall
+        if: ${{ !cancelled() && matrix.ps == 'pwsh' }}
+        run: bash tests/test-uninstall-sh.sh 2>&1 | tee "$RUNNER_TEMP/bash-uninstall-tests.log"
+
       - name: Report results as annotations
         if: always()
         run: |
+          tests/ci-annotate.sh "devtools.sh tests on Windows (Git Bash)" "${{ steps.bashwrap.outcome }}" "$RUNNER_TEMP/bash-wrap.log" '^(bash|FAIL|SKIP|      |ALL|[0-9]+ TEST)'
+          tests/ci-annotate.sh "setup.sh tests on Windows (Git Bash)" "${{ steps.bashsetup.outcome }}" "$RUNNER_TEMP/bash-setup-tests.log" '^(bash|FAIL|SKIP|      |ALL|[0-9]+ TEST)'
+          tests/ci-annotate.sh "uninstall.sh tests on Windows (Git Bash)" "${{ steps.bashuninstall.outcome }}" "$RUNNER_TEMP/bash-uninstall-tests.log" '^(bash|FAIL|SKIP|      |ALL|[0-9]+ TEST)'
           tests/ci-annotate.sh "wrapper tests on Windows (${{ matrix.ps }})" "${{ steps.pwsh.outcome }}" "$RUNNER_TEMP/pwsh.log" '^(PowerShell|FAIL|      |ALL|[0-9]+ TEST)'
           tests/ci-annotate.sh "setup.ps1 tests on Windows (${{ matrix.ps }})" "${{ steps.setup.outcome }}" "$RUNNER_TEMP/setup-tests.log" '^(PowerShell|--|FAIL|      |ALL|[0-9]+ SETUP)'
           tests/ci-annotate.sh "uninstall.ps1 tests on Windows (${{ matrix.ps }})" "${{ steps.uninstall.outcome }}" "$RUNNER_TEMP/uninstall-tests.log" '^(PowerShell|--|FAIL|SKIP|      |ALL|[0-9]+ UNINSTALL)'
@@ -176,6 +222,80 @@ jobs:
           pwsh -NoProfile -File setup.ps1 -NoPrompt -SkipBuild -SkipVerify -ProfilePath "$profile" 2>&1 | tee -a "$RUNNER_TEMP/setup-real.log"
           test "$(grep -c "^Import-Module '.*Devtools.psm1' -Force$" "$profile")" = 1
 
+      - name: One-file setup, bash (setup.sh against the real Docker engine)
+        id: setupsh
+        run: |
+          # The same sequence from bash: engine check, .env, compose build (cached by the build above),
+          # the line for the startup file, the wrappers, every tool in its own container. The home
+          # folder is a scratch one, so nothing of the runner's is changed.
+          home="$RUNNER_TEMP/bash-home"
+          rc="$RUNNER_TEMP/bashrc"
+          mkdir -p "$home"
+          : > "$rc"
+          HOME="$home" ./setup.sh --no-prompt --rc-file "$rc" 2>&1 | tee "$RUNNER_TEMP/setup-sh-real.log"
+          test "$(grep -c "^\. '.*devtools.sh'$" "$rc")" = 1
+          # And again: it must be safe to re-run.
+          HOME="$home" ./setup.sh --no-prompt --skip-build --skip-verify --rc-file "$rc" 2>&1 | tee -a "$RUNNER_TEMP/setup-sh-real.log"
+          test "$(grep -c "^\. '.*devtools.sh'$" "$rc")" = 1
+          # What a new terminal does with that line: the tools are the container's, for real.
+          {
+            echo "# a new bash, with the startup file loaded"
+            HOME="$home" bash -c '. "$1"; shopt -s expand_aliases
+              echo "tools: $(type -t az) $(type -t kubectl) $(type -t terraform) $(type -t dev)"
+              eval "tf version" | head -n 1
+              eval "k version --client" | head -n 1
+              # stdin and the current folder reach the container
+              echo "from stdin" | dev bash -c cat
+              dev bash -c "test -f /work/devtools.sh && echo the-folder-is-mounted"
+              # Tab completion asks the real tools in the container
+              comp() { COMP_LINE=$1; COMP_POINT=${#1}; read -ra COMP_WORDS <<< "$1"; COMP_CWORD=$(( ${#COMP_WORDS[@]} - 1 )); _devtools_complete; echo "[$1] -> ${COMPREPLY[*]:0:6}"; }
+              comp "kubectl cre"
+              comp "terraform ap"
+              comp "helm ins"
+              comp "kgp --all-nam"
+              comp "az acc"
+            ' _ "$rc"
+          } 2>&1 | tee "$RUNNER_TEMP/bash-real.log"
+          grep -q '^tools: function function function function$' "$RUNNER_TEMP/bash-real.log"
+          grep -q '^Terraform v' "$RUNNER_TEMP/bash-real.log"
+          grep -q 'Client Version' "$RUNNER_TEMP/bash-real.log"
+          grep -q '^from stdin$' "$RUNNER_TEMP/bash-real.log"
+          grep -q '^the-folder-is-mounted$' "$RUNNER_TEMP/bash-real.log"
+          grep -q '^\[kubectl cre\] -> .*create' "$RUNNER_TEMP/bash-real.log"
+          grep -q '^\[terraform ap\] -> .*apply' "$RUNNER_TEMP/bash-real.log"
+          grep -q '^\[helm ins\] -> .*install' "$RUNNER_TEMP/bash-real.log"
+          grep -q '^\[kgp --all-nam\] -> .*--all-namespaces' "$RUNNER_TEMP/bash-real.log"
+          grep -q '^\[az acc\] -> .*account' "$RUNNER_TEMP/bash-real.log"
+
+      - name: Uninstall, bash (uninstall.sh against the real Docker engine)
+        id: uninstallsh
+        run: |
+          # A container still running from the image and the line in the startup file; the default
+          # run removes both and keeps the image and the logins (uninstall.ps1 below deletes those).
+          home="$RUNNER_TEMP/bash-home"
+          rc="$RUNNER_TEMP/bashrc"
+          log="$RUNNER_TEMP/uninstall-sh-real.log"
+          : > "$log"
+          note() { echo "# $*" | tee -a "$log"; }
+          running() { docker ps -aq --filter ancestor=devtools:latest | wc -l; }
+          stray=$(docker ps -aq --filter ancestor=devtools:latest)
+          if [ -n "$stray" ]; then
+            note "left by earlier steps: $(docker ps -a --filter ancestor=devtools:latest --format '{{.ID}} {{.Image}} {{.Command}} {{.Status}}' | tr '\n' ';')"
+            # shellcheck disable=SC2086
+            docker rm -f $stray > /dev/null
+          fi
+          docker run -d --name toolbox-left-running-sh devtools:latest sleep 600
+          note "before: $(running) container(s), startup file lines: $(grep -c 'devtools.sh' "$rc" || true)"
+          test "$(running)" = 1
+          HOME="$home" ./uninstall.sh --no-prompt --rc-file "$rc" 2>&1 | tee -a "$log"
+          note "after: $(running) container(s), startup file lines: $(grep -c 'devtools.sh' "$rc" || true), image: $(docker image ls -q devtools:latest | wc -l)"
+          test "$(running)" = 0
+          test "$(grep -c 'devtools.sh' "$rc" || true)" = 0
+          test -n "$(docker image ls -q devtools:latest)"
+          docker volume inspect devtools-home > /dev/null
+          # Again: a re-run is safe.
+          HOME="$home" ./uninstall.sh --no-prompt --rc-file "$rc" 2>&1 | tee -a "$log"
+
       - name: Uninstall (uninstall.ps1 against the real Docker engine)
         id: uninstall
         run: |
@@ -226,6 +346,9 @@ jobs:
           tests/ci-annotate.sh "terminal test, bash" "${{ steps.ptybash.outcome }}" "$RUNNER_TEMP/pty-bash.log" '^(PASS|FAIL|      |ALL|[0-9]+ SHELL)'
           tests/ci-annotate.sh "importer end to end" "${{ steps.e2e.outcome }}" "$RUNNER_TEMP/e2e.log" '^(PASS|FAIL|RESULT|==|\[setup\]|fake API|PKI|      \|)'
           tests/ci-annotate.sh "setup.ps1 on real Docker" "${{ steps.setup.outcome }}" "$RUNNER_TEMP/setup-real.log" '^(==|  OK|  WARN|  FAIL|All set|DevOps toolbox)'
+          tests/ci-annotate.sh "setup.sh on real Docker" "${{ steps.setupsh.outcome }}" "$RUNNER_TEMP/setup-sh-real.log" '^(==|  OK|  WARN|  FAIL|All set|DevOps toolbox)'
+          tests/ci-annotate.sh "bash wrappers on real Docker" "${{ steps.setupsh.outcome }}" "$RUNNER_TEMP/bash-real.log" '^(#|tools|Terraform|Client|from stdin|the-folder|\[)'
+          tests/ci-annotate.sh "uninstall.sh on real Docker" "${{ steps.uninstallsh.outcome }}" "$RUNNER_TEMP/uninstall-sh-real.log" '^(==|  OK|  WARN|  FAIL|Done|DevOps toolbox|#)'
           tests/ci-annotate.sh "uninstall.ps1 on real Docker" "${{ steps.uninstall.outcome }}" "$RUNNER_TEMP/uninstall-real.log" '^(==|  OK|  WARN|  FAIL|Done|DevOps toolbox|#)'
 
       - name: Publish results to the job summary
@@ -251,6 +374,18 @@ jobs:
             echo '## setup.ps1 on the real Docker engine'
             echo '```'
             cat "$RUNNER_TEMP/setup-real.log" 2>/dev/null || echo 'did not run'
+            echo '```'
+            echo '## setup.sh on the real Docker engine'
+            echo '```'
+            cat "$RUNNER_TEMP/setup-sh-real.log" 2>/dev/null || echo 'did not run'
+            echo '```'
+            echo '## bash wrappers on the real Docker engine'
+            echo '```'
+            cat "$RUNNER_TEMP/bash-real.log" 2>/dev/null || echo 'did not run'
+            echo '```'
+            echo '## uninstall.sh on the real Docker engine'
+            echo '```'
+            cat "$RUNNER_TEMP/uninstall-sh-real.log" 2>/dev/null || echo 'did not run'
             echo '```'
             echo '## uninstall.ps1 on the real Docker engine'
             echo '```'

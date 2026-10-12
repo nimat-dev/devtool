@@ -1,9 +1,12 @@
-# Shortcuts for the shell inside the toolbox (bash and zsh). Sourced from bashrc and zshrc.
+# Shortcuts for the shell inside the toolbox (bash and zsh, sourced from bashrc and zshrc) and for
+# bash on your own machine (devtools.sh sources this same file, where az and kubectl are the
+# wrappers that run the container).
 #
 # Arguments you type after a shortcut are appended: "kgp -n kube-system" runs
 # "kubectl get pods -n kube-system". The PowerShell side has the same list (Devtools.psm1) and a
 # test keeps the two in step, so change both. `alias` prints what is defined here.
 # Your own shortcuts go in ~/.devtools-aliases.sh, which is read after this file and wins.
+# devtools.sh reads the alias names from the `alias NAME=` lines below, one per line.
 
 # --- Azure ---------------------------------------------------------------------------------
 alias azl='az login --use-device-code'
