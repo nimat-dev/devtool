@@ -4,3 +4,4 @@ repos/*
 !repos/.gitkeep
 certs/*.crt
 certs/*.pem
+__pycache__/
