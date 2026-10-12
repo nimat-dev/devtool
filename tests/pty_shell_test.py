@@ -22,7 +22,9 @@ hostbash starts an interactive bash that loads devtools.sh from its startup file
 on the PATH, and checks what a person would see: the tools are functions, Tab completion through the
 container (also through a shortcut), the Up arrow searching the history, the terminal being handed to
 docker (-t), the double dash, and the keys being handed back by devtools-unload. DEVTOOLS_NO_READLINE=1
-is checked in a second session.
+is checked in a second session. A third session plays Git Bash in the mintty window (OSTYPE=msys,
+TERM_PROGRAM=mintty) with a winpty that rewrites path arguments the way Git for Windows' does
+(tests/fakebin/winpty): docker must still get -w /work and the rest as typed.
 
 Prints PASS/FAIL lines and exits 1 on any FAIL.
 """
@@ -346,6 +348,20 @@ def run_hostbash(options, command):
             # DEVTOOLS_NO_READLINE=1 leaves the arrow keys alone.
             env["DEVTOOLS_NO_READLINE"] = "1"
             hostbash_noreadline(bash, env)
+            env.pop("DEVTOOLS_NO_READLINE")
+            # Git Bash in the mintty window, pretended.
+            winpty = os.path.join(bindir, "winpty")
+            shutil.copy(os.path.join(here, "fakebin", "winpty"), winpty)
+            os.chmod(winpty, 0o755)
+            rc_mintty = os.path.join(work, "bashrc-mintty")
+            with open(rc) as f:
+                text = f.read()
+            with open(rc_mintty, "w") as f:
+                f.write(text.replace(". '%s'\n" % script, "OSTYPE=msys\n. '%s'\n" % script))
+            winpty_log = os.path.join(work, "winpty.log")
+            env["TERM_PROGRAM"] = "mintty"
+            env["WINPTY_LOG_FILE"] = winpty_log
+            hostbash_mintty(command + ["--noprofile", "--rcfile", rc_mintty, "-i"], env, args_file, winpty_log)
         print()
         print("ALL SHELL CHECKS PASSED" if failures == 0 else "%d SHELL CHECK(S) FAILED" % failures)
         return 0 if failures == 0 else 1
@@ -470,6 +486,56 @@ def hostbash_noreadline(command, env):
         t.mark()
         t.send("type -t az\r")
         check("DEVTOOLS_NO_READLINE=1: the tools are still functions", t.expect(r"function", 10, clean=True), tail(t.buf))
+    t.close()
+
+
+def hostbash_mintty(command, env, args_file, winpty_log):
+    """Git Bash in the mintty window, pretended: OSTYPE=msys, TERM_PROGRAM=mintty, a real terminal,
+    and a winpty that rewrites path arguments the way Git for Windows' winpty does. Without the
+    hex hand-over, -w /work arrives as -w C:/fake-git/work, which is the error Git Bash showed."""
+    t = Term(command, env=env)
+    ready = t.expect(r"HB> ", timeout=30)
+    check("mintty: bash starts and shows a prompt", ready, tail(t.buf))
+    if not ready:
+        t.close()
+        return
+    t.pump(1.0)
+
+    def read_args():
+        got = []
+        if os.path.exists(args_file):
+            with open(args_file) as f:
+                got = f.read().split("\n")
+        while got and got[-1] == "":
+            got.pop()
+        return got
+
+    def run(line, name):
+        if os.path.exists(args_file):
+            os.remove(args_file)
+        t.mark()
+        t.send(line + "\r")
+        ok = t.expect(r"HB> ", 20, clean=True)
+        t.pump(0.5)
+        check(name + " (the prompt comes back)", ok, tail(t.buf))
+        return read_args()
+
+    got = run("kubectx", "mintty: kubectx")
+    check("mintty: docker gets a terminal (-t) and the image defaults", got[:6] == ["run", "--rm", "-i", "-t", "-v", "devtools-home:/root"], repr(got))
+    check("mintty: the working directory is /work, not a rewritten path", got[-4:] == ["-w", "/work", "devtools:latest", "kubectx"], repr(got))
+    check("mintty: the folder is mounted on /work as is", len(got) > 7 and got[6] == "-v" and got[7].endswith(":/work") and "fake-git" not in got[7], repr(got))
+    log = open(winpty_log).read() if os.path.exists(winpty_log) else ""
+    check("mintty: docker went through winpty, to the helper script", "devtools-pty-run.sh" in log, repr(log[-300:]))
+    check("mintty: winpty was not shown the docker arguments", " -w " not in log and "run --rm" not in log, repr(log[-300:]))
+
+    got = run("kubectl exec -it my-pod -- /bin/sh /no/such/file", "mintty: kubectl exec with paths")
+    want = ["devtools:latest", "kubectl", "exec", "-it", "my-pod", "--", "/bin/sh", "/no/such/file"]
+    check("mintty: arguments that look like paths arrive as typed", got[-len(want):] == want, repr(got))
+
+    t.mark()
+    t.send("devtools-info\r")
+    check("mintty: devtools-info says docker goes through winpty", t.expect(r"Terminal\s+winpty", 10, clean=True), tail(t.buf))
+    t.pump(0.5)
     t.close()
 
 

@@ -71,21 +71,63 @@ _devtools_say_no_docker() {
   fi
 }
 
+# Finds the docker program: _DEVTOOLS_DOCKER is its name, and the result says whether it is there.
+# In Git Bash that is docker.exe by name, so that a plain file called docker (a script, say) in
+# front of it on the PATH is not what runs.
+_devtools_find_docker() {
+  _DEVTOOLS_DOCKER=docker
+  if [ -n "$_DEVTOOLS_WINDOWS" ] && type -P docker.exe > /dev/null 2>&1; then _DEVTOOLS_DOCKER=docker.exe; fi
+  type -P "$_DEVTOOLS_DOCKER" > /dev/null 2>&1
+}
+
+# _devtools_hex VAR ARG...   puts the arguments into VAR as one string of hex digits: two for every
+# byte and 00 after each argument (an argument cannot hold a NUL byte, so 00 only ever ends one).
+_devtools_hex() {
+  local _hex_out
+  _hex_out=$(printf '%s\0' "${@:2}" | od -An -v -tx1) || return 1
+  printf -v "$1" '%s' "${_hex_out//[[:space:]]/}"
+}
+
 # Run the real docker (never a function or an alias of the same name) with these arguments, each
 # one arriving exactly as given. Git Bash must not rewrite /work, /root or a tool argument such as
 # /subscriptions/... into a Windows path on the way to docker.exe, so that is switched off here.
-# With --winpty first, docker runs through winpty (needed for an interactive docker in mintty).
+#
+# With --winpty first, docker gets a terminal through winpty, which Git Bash in the mintty window
+# needs ("the input device is not a TTY" without it). But winpty rewrites every argument that looks
+# like a path on its own account and cannot be told not to: it turned -w /work into
+# -w C:/Users/me/AppData/Local/Programs/Git/work, and docker refused that. So docker's arguments
+# never go past winpty as they are. They go as ONE argument of hex digits, which nothing can take
+# for a path, to scripts/devtools-pty-run.sh. winpty starts that in a bash of its own, and it turns
+# the digits back into the arguments and runs docker.exe.
 _devtools_docker() {
-  local launcher=()
+  local pty='' helper hex
   if [ "${1:-}" = "--winpty" ]; then
-    launcher=(winpty)
+    pty=1
     shift
   fi
-  if ! type -P docker > /dev/null 2>&1; then
+  if ! _devtools_find_docker; then
     _devtools_say_no_docker
     return 127
   fi
-  MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*' command ${launcher[@]+"${launcher[@]}"} docker "$@"
+  if [ -z "$pty" ]; then
+    MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*' command "$_DEVTOOLS_DOCKER" "$@"
+    return
+  fi
+  helper=$_DEVTOOLS_DIR/scripts/devtools-pty-run.sh
+  if [ ! -r "$helper" ]; then
+    echo "devtools: $helper is missing, so docker cannot get a terminal in this window. Extract the whole toolbox folder again." >&2
+    return 1
+  fi
+  if ! _devtools_hex hex "$@"; then
+    echo "devtools: could not prepare the arguments for winpty (is od installed?)." >&2
+    return 1
+  fi
+  # A Windows command line holds 32767 characters; this leaves room for the rest of it.
+  if [ "${#hex}" -gt 30000 ]; then
+    echo "devtools: these arguments are too long to pass through winpty in the Git Bash window. Run this one from PowerShell or Windows Terminal." >&2
+    return 1
+  fi
+  command winpty "$BASH" "$helper" "$hex"
 }
 
 # A path the way the docker CLI wants it: C:/Users/me/project in Git Bash, unchanged elsewhere.
@@ -107,13 +149,16 @@ _devtools_use_winpty() {
   [ -n "$_DEVTOOLS_WINDOWS" ] && [ "${TERM_PROGRAM:-}" = mintty ] && type -P winpty > /dev/null 2>&1
 }
 
+# True when a person is at the keyboard and the screen. Only then does docker get a terminal.
+_devtools_is_tty() { [ -t 0 ] && [ -t 1 ]; }
+
 # Fills _DEVTOOLS_RUN with the docker arguments every call shares (up to the image name) and
 # _DEVTOOLS_PTY with --winpty when docker has to go through winpty.
 _devtools_prepare() {
   _DEVTOOLS_RUN=(run --rm -i)
   _DEVTOOLS_PTY=
   # A TTY only for genuine interactive use: with -t, piped or captured output gets corrupted.
-  if [ -t 0 ] && [ -t 1 ]; then
+  if _devtools_is_tty; then
     _DEVTOOLS_RUN+=(-t)
     if _devtools_use_winpty; then _DEVTOOLS_PTY=--winpty; fi
   fi
@@ -180,9 +225,12 @@ devtools-import-kube() {
 
 # Show what the wrappers are pointed at.
 devtools-info() {
+  local docker terminal=direct
+  if _devtools_find_docker; then docker=$(type -P "$_DEVTOOLS_DOCKER"); else docker='not found on PATH'; fi
+  if _devtools_use_winpty; then terminal='winpty (this Git Bash window needs it for docker -t)'; fi
   printf '%-12s %s\n' Image "$DEVTOOLS_IMAGE" Volume "$DEVTOOLS_VOLUME" \
     Tools 'az, kubectl, terraform, flux, helm, kustomize, azd, gh, kubectx, kubens, dev' \
-    AliasesFile "$_DEVTOOLS_ALIASES_FILE"
+    AliasesFile "$_DEVTOOLS_ALIASES_FILE" Docker "$docker" Terminal "$terminal"
 }
 
 # ---- Shortcuts -------------------------------------------------------------------------------------
@@ -400,10 +448,11 @@ devtools-unload() {
   for binding in "${_DEVTOOLS_KEYS_UNDO[@]+"${_DEVTOOLS_KEYS_UNDO[@]}"}"; do bind "$binding" 2> /dev/null; done
   unset -f az kubectl terraform flux helm kustomize azd gh kubectx kubens dev aksc aksup aksx \
     devtools-import-kube devtools-info devtools-alias \
-    _devtools_say_no_docker _devtools_docker _devtools_hostpath _devtools_use_winpty _devtools_prepare \
+    _devtools_say_no_docker _devtools_find_docker _devtools_hex _devtools_docker _devtools_hostpath \
+    _devtools_use_winpty _devtools_is_tty _devtools_prepare \
     _devtools_run _devtools_complete _devtools_register_completion _devtools_readline
   unset DEVTOOLS_IMAGE DEVTOOLS_VOLUME \
-    _DEVTOOLS_ALIASES_FILE _DEVTOOLS_DIR _DEVTOOLS_WINDOWS _DEVTOOLS_COMPLETABLE _DEVTOOLS_RUN _DEVTOOLS_PTY \
+    _DEVTOOLS_ALIASES_FILE _DEVTOOLS_DIR _DEVTOOLS_WINDOWS _DEVTOOLS_COMPLETABLE _DEVTOOLS_RUN _DEVTOOLS_PTY _DEVTOOLS_DOCKER \
     _DEVTOOLS_ALIAS_NAMES _DEVTOOLS_SNAPSHOT _DEVTOOLS_PERSONAL _DEVTOOLS_OVERRIDDEN _DEVTOOLS_SPECIAL _DEVTOOLS_KEYS_UNDO
   unset -f devtools-unload
   return 0

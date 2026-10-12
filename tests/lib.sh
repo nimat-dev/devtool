@@ -109,7 +109,7 @@ install_fake_docker() {
     fi
   else
     FAKEBIN=$TEST_ROOT/tests/fakebin
-    chmod +x "$FAKEBIN/docker"
+    chmod +x "$FAKEBIN/docker" "$FAKEBIN/winpty"
   fi
   PATH=$FAKEBIN:$PATH
   export PATH FAKEBIN
@@ -124,6 +124,7 @@ new_project() {
   local f
   for f in setup.sh uninstall.sh devtools.sh Dockerfile docker-compose.yml .env.example; do cp "$TEST_ROOT/$f" "$1/"; done
   cp "$TEST_ROOT/scripts/shell/aliases.sh" "$1/scripts/shell/"
+  cp "$TEST_ROOT/scripts/devtools-pty-run.sh" "$1/scripts/"
 }
 
 # Runs PROJECT/SCRIPT in a child bash whose home folder is HOME. Nothing can be typed to it unless

@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# Fake `winpty` for the tests, for a machine that has none (Linux, macOS), so that devtools.sh can
+# be tried the way Git Bash in the mintty window runs it.
+#
+# What matters is what Git for Windows' winpty does to the arguments. It converts EVERY argument
+# after the program name into a Windows path itself, and ignores MSYS_NO_PATHCONV and
+# MSYS2_ARG_CONV_EXCL, which only the shell honours. So `winpty docker run -w /work ...` reaches
+# docker as `-w C:/Users/me/AppData/Local/Programs/Git/work ...`, and docker answers "the working
+# directory ... is invalid, it needs to be an absolute path". This fake does the same to an
+# argument that begins with / (unless it is a file that exists here, which stands for a path that
+# converts correctly, such as the path of a script) and to one that has :/ in it (a volume
+# NAME:/path), then runs the program.
+#
+#   WINPTY_LOG_FILE   when set, the arguments of every call are appended here, one line per call
+#   WINPTY_FAKE_ROOT  what an unconverted /path gets in front of it (default C:/fake-git)
+: "${WINPTY_FAKE_ROOT:=C:/fake-git}"
+if [ -n "${WINPTY_LOG_FILE:-}" ]; then echo "$*" >> "$WINPTY_LOG_FILE"; fi
+
+if [ $# -eq 0 ]; then
+  echo "usage: winpty PROGRAM [ARGS...]" >&2
+  exit 1
+fi
+prog=$1
+shift
+
+converted=()
+for arg in "$@"; do
+  case $arg in
+    /*)
+      if [ -e "$arg" ]; then converted+=("$arg"); else converted+=("$WINPTY_FAKE_ROOT$arg"); fi ;;
+    *:/*)
+      converted+=("${arg%%:/*};$WINPTY_FAKE_ROOT/${arg#*:/}") ;;
+    *)
+      converted+=("$arg") ;;
+  esac
+done
+exec "$prog" ${converted[@]+"${converted[@]}"}

@@ -235,6 +235,8 @@ dt 'devtools-info'
 check_has 'devtools-info shows the image' "$OUT" 'Image        devtools:latest'
 check_has 'devtools-info shows the volume' "$OUT" 'Volume       devtools-home'
 check_has 'devtools-info lists the tools' "$OUT" 'az, kubectl, terraform, flux, helm, kustomize, azd, gh, kubectx, kubens, dev'
+check_has 'devtools-info shows which docker it runs' "$OUT" 'Docker       '
+check_has 'and that docker goes straight to it (no winpty outside the mintty window)' "$OUT" 'Terminal     direct'
 
 # ---- Docker Desktop Kubernetes -----------------------------------------------------------------------
 dt 'devtools-import-kube; echo rc=$?'
@@ -298,6 +300,173 @@ dt 'complete -p ls 2>&1'
 check_has 'other commands are left alone' "$OUT" 'no completion specification'
 unset DOCKER_RUN_FILE
 
+# ---- Git Bash in the mintty window: docker through winpty --------------------------------------------
+# Git for Windows' winpty rewrites every argument that looks like a path, whatever MSYS_NO_PATHCONV
+# says: -w /work became -w C:/Users/me/AppData/Local/Programs/Git/work and docker refused it. So
+# devtools.sh hands winpty the docker arguments as one string of hex digits, and
+# scripts/devtools-pty-run.sh, which winpty starts, turns them back into arguments and runs docker.
+# Here a child bash pretends to be Git Bash in mintty at a terminal (OSTYPE=msys, TERM_PROGRAM=mintty,
+# _devtools_is_tty true). On Linux and macOS tests/fakebin/winpty rewrites the arguments the way the
+# real one does; on Windows the real winpty is used, if this Git has one.
+WINPTY_LOG=$TMP/winpty.log
+export WINPTY_LOG_FILE=$WINPTY_LOG
+BASE_T="run|--rm|-i|-t|-v|devtools-home:/root|-v|$WORK_NATIVE:/work|-w|/work|devtools:latest"
+MINTTY_PRELUDE='OSTYPE=msys; . "$DEVTOOLS_SH" || echo "LOAD FAILED"; '
+TTY_ON='_devtools_is_tty() { return 0; }; '
+# MT_TERM is TERM_PROGRAM (default mintty), MT_TIMEOUT a limit in seconds for the whole run.
+mt() {
+  RC=0
+  OUT=$(cd "$WORK" && ${MT_TIMEOUT:+timeout "$MT_TIMEOUT"} "$ENV_BIN" HOME="$HOME_DIR" TERM_PROGRAM="${MT_TERM-mintty}" "$BASH" -c "$MINTTY_PRELUDE$TTY_ON$1" 2>&1) || RC=$?
+  OUT=${OUT//$'\r'/}
+}
+winpty_seen() { cat "$WINPTY_LOG" 2> /dev/null || true; }
+
+if ! is_windows; then
+  rm -f "$WINPTY_LOG"
+  mt 'kubectx; echo rc=$?'
+  check_has 'in the mintty window kubectx runs' "$OUT" 'rc=0'
+  check_eq 'docker gets a terminal and every argument as typed, although winpty rewrites paths' "$(last_args)" "$BASE_T|kubectx"
+  check_has 'it went through winpty, to the helper script' "$(winpty_seen)" 'devtools-pty-run.sh'
+  check_lacks 'and winpty was not shown the docker arguments' "$(winpty_seen)" ' -w '
+  check_lacks 'not even the first of them' "$(winpty_seen)" 'run --rm'
+
+  mt "$SNIPPET"
+  check_eq 'awkward arguments (quotes, spaces, empty, glob, /paths) get through winpty untouched' "$(last_args)" \
+    "$BASE_T|kubectl|patch|deploy|x|-p|{\"a\":\"b c\"}||*|/subscriptions/x|--flag=/path|~|\$HOME|it's|two  spaces|-o|jsonpath={.items[*].metadata.name}"
+  mt 'kubectl get "é 日本語" /no/such/dir devtools-home:/root'
+  check_eq 'so do non-ASCII text and a volume-style NAME:/path' "$(last_args)" "$BASE_T|kubectl|get|é 日本語|/no/such/dir|devtools-home:/root"
+  DOCKER_FORCE_EXIT=3 mt 'az fail'
+  check_eq "docker's exit code comes back through winpty" "$RC" 3
+  DOCKER_FAKE_OUTPUT=1 mt 'az x'
+  check_eq 'and so does what it prints' "$OUT" 'fake docker run ok'
+
+  long=$(printf '%9000s' '' | tr ' ' a)
+  mt 'kubectl x "'"$long"'"'
+  got=$(tail -n 1 "$DOCKER_ARGS_FILE")
+  check_eq 'a long argument (9000 characters) gets through, whole' "${#got}:$(printf '%s' "$got" | cksum)" "9000:$(printf '%s' "$long" | cksum)"
+  long=$(printf '%20000s' '' | tr ' ' a)
+  rm -f "$DOCKER_ARGS_FILE"
+  mt 'kubectl x "'"$long"'"; echo rc=$?'
+  check_has 'one too long for a Windows command line is refused, with the reason' "$OUT" 'too long to pass through winpty'
+  check_has 'and the call fails' "$OUT" 'rc=1'
+  check_no 'and docker is not called' test -e "$DOCKER_ARGS_FILE"
+
+  mt 'dev bash -c "echo hi"'
+  check_eq 'dev goes the same way' "$(last_args)" "$BASE_T|bash|-c|echo hi"
+  AKS_RG=my-rg mt 'dev'
+  check_eq 'and hands AKS_RG to the shell inside' "$(last_args)" \
+    "run|--rm|-i|-t|-v|devtools-home:/root|-v|$WORK_NATIVE:/work|-w|/work|-e|AKS_RG=my-rg|devtools:latest"
+
+  rm -f "$WINPTY_LOG"
+  RC=0
+  OUT=$(cd "$WORK" && "$ENV_BIN" HOME="$HOME_DIR" TERM_PROGRAM=mintty "$BASH" -c "${MINTTY_PRELUDE}kubectx" 2>&1 < /dev/null) || RC=$?
+  check_eq 'without a terminal (piped or captured) there is no -t' "$(last_args)" "$BASE|kubectx"
+  check_eq 'and winpty is not used' "$(winpty_seen)" ''
+
+  rm -f "$WINPTY_LOG"
+  DEVTOOLS_WINPTY=0 mt 'kubectx'
+  check_eq 'DEVTOOLS_WINPTY=0 runs docker directly, still with -t' "$(last_args)" "$BASE_T|kubectx"
+  check_eq 'and winpty is not used' "$(winpty_seen)" ''
+  MT_TERM=vscode mt 'kubectx'
+  check_eq 'in another terminal (Windows Terminal, VS Code) docker is run directly' "$(last_args)" "$BASE_T|kubectx"
+  check_eq 'and winpty is not used there' "$(winpty_seen)" ''
+  MT_TERM=vscode DEVTOOLS_WINPTY=1 mt 'kubectx'
+  check_has 'DEVTOOLS_WINPTY=1 uses winpty in any terminal' "$(winpty_seen)" 'devtools-pty-run.sh'
+  check_eq 'and docker still gets its arguments as typed' "$(last_args)" "$BASE_T|kubectx"
+
+  mt 'devtools-info'
+  check_has 'devtools-info says docker goes through winpty in this window' "$OUT" 'Terminal     winpty'
+
+  mkdir -p "$TMP_POSIX/nowinpty"
+  cp "$TEST_ROOT/tests/fakebin/docker" "$TMP_POSIX/nowinpty/docker"
+  rm -f "$WINPTY_LOG"
+  PATH="$TMP_POSIX/nowinpty:${PATH#"$FAKEBIN:"}" mt 'kubectx; devtools-info'
+  check_eq 'a Git Bash without winpty runs docker directly' "$(last_args)" "$BASE_T|kubectx"
+  check_has 'and devtools-info does not claim winpty' "$OUT" 'Terminal     direct'
+
+  rm -f "$DOCKER_ARGS_FILE"
+  DEVTOOLS_SH="$TMP/lonely/devtools.sh" mt 'kubectx; echo rc=$?'
+  check_has 'without scripts/devtools-pty-run.sh it says what is missing' "$OUT" 'devtools-pty-run.sh is missing'
+  check_has 'and fails' "$OUT" 'rc=1'
+  check_no 'and docker is not called' test -e "$DOCKER_ARGS_FILE"
+
+  # Every byte but NUL, as an argument of its own and together in one, through the codec in both directions.
+  NULBIN=$TMP_POSIX/nulbin
+  mkdir -p "$NULBIN"
+  printf '#!/usr/bin/env bash\nprintf "%%s\\0" "$@" > "$ARGS_NUL"\n' > "$NULBIN/docker"
+  chmod +x "$NULBIN/docker"
+  cat > "$TMP_POSIX/allbytes.sh" << 'EOF'
+. "$DEVTOOLS_SH"
+args=(run)
+all=
+for n in $(seq 1 255); do
+  printf -v esc '\\x%02x' "$n"
+  a=$(printf "$esc"; printf x)    # the x keeps a trailing newline from being lost
+  args+=("${a%x}")
+  all+=${a%x}
+done
+args+=("$all" '' 'two  spaces' "it's" '$HOME' '*' '/work' 'C:\Users\x' 'é日本語')
+printf '%s\0' "${args[@]}" > "$ARGS_EXPECTED"
+hex=
+_devtools_hex hex "${args[@]}"
+bash "$HELPER" "$hex"
+EOF
+  for loc in C C.UTF-8; do
+    rm -f "$TMP/args.nul"
+    RC=0
+    OUT=$(cd "$WORK" && "$ENV_BIN" HOME="$HOME_DIR" LC_ALL="$loc" PATH="$NULBIN:$PATH" ARGS_NUL="$TMP/args.nul" ARGS_EXPECTED="$TMP/expected.nul" \
+      HELPER="$TEST_ROOT/scripts/devtools-pty-run.sh" "$BASH" "$TMP_POSIX/allbytes.sh" 2>&1) || RC=$?
+    check_eq "every byte value survives the hex form and back (LC_ALL=$loc)" "$RC" 0
+    check_same "and docker is given exactly the arguments (LC_ALL=$loc)" "$TMP/args.nul" "$TMP/expected.nul"
+  done
+fi
+
+HELPER=$TEST_ROOT/scripts/devtools-pty-run.sh
+for bad in '' zz 616 6162; do
+  RC=0
+  OUT=$("$BASH" "$HELPER" "$bad" 2>&1) || RC=$?
+  check_eq "the helper refuses '$bad' (not a whole list of arguments)" "$RC" 2
+done
+RC=0
+OUT=$("$BASH" "$HELPER" 2>&1) || RC=$?
+check_eq 'and without any argument' "$RC" 2
+check_has 'and says it is not for typing' "$OUT" 'not meant to be run by hand'
+
+if is_windows; then
+  REAL_WINPTY=$(type -P winpty 2> /dev/null || true)
+  if [ -z "$REAL_WINPTY" ]; then
+    check_skip 'docker through the real winpty' 'this Git for Windows has no winpty'
+  else
+    # A winpty that works without a terminal (CI has none), found before the real one.
+    mkdir -p "$TMP_POSIX/headless"
+    printf '#!/usr/bin/env bash\nexec "%s" -Xallow-non-tty -Xplain "$@"\n' "$REAL_WINPTY" > "$TMP_POSIX/headless/winpty"
+    chmod +x "$TMP_POSIX/headless/winpty"
+    printf 'for a in "$@"; do echo "<$a>"; done\n' > "$TMP_POSIX/showargs.sh"
+    probe=$(cd "$WORK" && timeout 45 "$TMP_POSIX/headless/winpty" "$BASH" "$TMP_POSIX/showargs.sh" /work devtools-home:/root --flag=/path plain 2>&1 | tr -d '\r') || true
+    echo "INFO  winpty ($REAL_WINPTY) was asked to start bash with the arguments /work devtools-home:/root --flag=/path plain, and bash received:"
+    printf '%s\n' "$probe" | sed 's/^/INFO    /'
+    if [[ $probe != *'<plain>'* ]]; then
+      check_skip 'docker through the real winpty' 'winpty cannot run without a terminal on this machine'
+    else
+      rm -f "$WINPTY_LOG"
+      MT_TIMEOUT=60 PATH="$TMP_POSIX/headless:$PATH" mt 'kubectx; echo rc=$?'
+      if [ "$RC" -eq 124 ]; then
+        check_fail 'real winpty: kubectx finishes (it did not in 60 seconds)' "$OUT"
+      else
+        check_has 'real winpty: kubectx runs' "$OUT" 'rc=0'
+        check_eq 'real winpty: docker.exe gets a terminal and every argument as typed' "$(last_args)" "$BASE_T|kubectx"
+        MT_TIMEOUT=60 PATH="$TMP_POSIX/headless:$PATH" mt "$SNIPPET"
+        check_eq 'real winpty: awkward arguments (quotes, spaces, empty, glob, /paths) arrive untouched' "$(last_args)" \
+          "$BASE_T|kubectl|patch|deploy|x|-p|{\"a\":\"b c\"}||*|/subscriptions/x|--flag=/path|~|\$HOME|it's|two  spaces|-o|jsonpath={.items[*].metadata.name}"
+        DOCKER_FORCE_EXIT=3 MT_TIMEOUT=60 PATH="$TMP_POSIX/headless:$PATH" mt 'az fail'
+        check_eq "real winpty: docker's exit code comes back" "$RC" 3
+        DOCKER_FAKE_OUTPUT=1 MT_TIMEOUT=60 PATH="$TMP_POSIX/headless:$PATH" mt 'az x'
+        check_has 'real winpty: and what it prints' "$OUT" 'fake docker run ok'
+      fi
+    fi
+  fi
+fi
+
 # ---- Taking it out again -----------------------------------------------------------------------------
 dt 'unset DEVTOOLS_SH; devtools-unload; echo "type: $(type -t az || echo none)"; echo "aliases: $(alias | wc -l | tr -d " ")"; echo "specs: $(complete -p | grep -c -i devtools)"; echo "funcs: $(compgen -A function | grep -c -i devtools)"; echo "vars: $(compgen -v | grep -c -i devtools)"; echo "aks: $(type -t aksc || echo none)"'
 check_lacks 'devtools-unload removes the tool functions' "$OUT" 'type: function'
@@ -309,7 +478,7 @@ check_has 'and every variable of its own' "$OUT" 'vars: 0'
 
 # ---- Written for bash 4.2 ----------------------------------------------------------------------------
 newer=$(grep -nE '\$\{[A-Za-z_]+@[QEPAaKk]\}|(local|declare|typeset) -[a-zA-Z]*n |\[-[0-9]+\]\}|\$EPOCH(SECONDS|REALTIME)|\$BASH_ARGV0|wait -n|mapfile -d|read -N|\$SRANDOM|\$\{[A-Za-z_]+\[-' \
-  "$TEST_ROOT/devtools.sh" "$TEST_ROOT/setup.sh" "$TEST_ROOT/uninstall.sh" || true)
+  "$TEST_ROOT/devtools.sh" "$TEST_ROOT/setup.sh" "$TEST_ROOT/uninstall.sh" "$TEST_ROOT/scripts/devtools-pty-run.sh" || true)
 check_eq 'the scripts use nothing newer than bash 4.2 (namerefs, negative indexes, @Q ...)' "$newer" ''
 
 check_summary

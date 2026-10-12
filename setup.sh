@@ -289,7 +289,7 @@ echo "${c_cyan}DevOps toolbox setup  ($root)${c_off}"
 
 # ---- 1. Docker -------------------------------------------------------------------------------
 step '1/6  Docker'
-for f in Dockerfile docker-compose.yml devtools.sh scripts/shell/aliases.sh; do
+for f in Dockerfile docker-compose.yml devtools.sh scripts/shell/aliases.sh scripts/devtools-pty-run.sh; do
   if [ ! -e "$root/$f" ]; then
     stop_setup "Cannot find $f next to setup.sh. Run it from the project folder (the one that holds the Dockerfile)."
   fi

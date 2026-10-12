@@ -321,10 +321,15 @@ Tab lists the choices when there are several.
 On Git Bash, `devtools.sh` stops Git Bash from rewriting `/work`, `/subscriptions/...` or any
 argument that starts with a slash into a Windows path, and mounts the current folder in the form
 Docker for Windows wants (`C:/Users/you/project`). In the plain Git Bash window (mintty) a program
-that needs a terminal, such as `az login`, only works through `winpty`, which Git for Windows ships;
-`devtools.sh` uses it there automatically. The Windows Terminal and the VS Code terminal do not need
-it. In WSL, Docker Desktop must have WSL integration switched on for your distribution; Docker
-Desktop's kubeconfig is the Windows one, so use
+that needs a terminal, such as `az login`, `kubectl exec -it` or `dev`, only works through `winpty`,
+which Git for Windows ships; `devtools.sh` uses it there automatically. `winpty` rewrites every
+argument that looks like a path on its own account (`-w /work` became
+`-w C:/Users/you/AppData/Local/Programs/Git/work`) and cannot be told not to, so docker's arguments
+never go past it as they are. They go as one string of hex digits to `scripts/devtools-pty-run.sh`,
+which `winpty` starts, and which turns them back into arguments and runs `docker.exe`. That file has
+to stay in the `scripts` folder next to `devtools.sh`. The Windows Terminal and the VS Code terminal
+do not need `winpty`. In WSL, Docker Desktop must have WSL integration switched on for your
+distribution; Docker Desktop's kubeconfig is the Windows one, so use
 `devtools-import-kube docker-desktop /mnt/c/Users/NAME/.kube/config` there.
 
 | Variable | Effect |
@@ -642,7 +647,9 @@ latest result). It runs three jobs:
   - `tests/pty_shell_test.py hostbash` starts an interactive bash in a pseudo terminal with the
     line `setup.sh` writes and types like a person: Tab completion through a fake docker, the Up
     arrow finding earlier commands, `-t` reaching docker at a terminal, and the keys coming back
-    after `devtools-unload`.
+    after `devtools-unload`. A third session plays the plain Git Bash window: a stand-in `winpty`
+    rewrites path arguments the way Git for Windows' does, and docker must still get `-w /work`
+    and every other argument as typed.
   - The three bash test scripts run once more inside the official `bash:4.2` and `bash:4.3` images,
     the oldest bash the scripts promise to work with.
 - **On Windows**: all three PowerShell test scripts in Windows PowerShell 5.1 and in PowerShell 7 on
@@ -652,7 +659,9 @@ latest result). It runs three jobs:
   profile folders of both PowerShell editions are tested (and put back afterwards). The three bash
   test scripts run there too, in Git Bash against the fake `docker.exe`, which is what proves that
   Git Bash does not rewrite `/work` or `/subscriptions/...` and that the folder is mounted in its
-  Windows form.
+  Windows form. When the Git for Windows on the runner has a `winpty`, the same tests also run
+  docker through the real one (started with `-Xallow-non-tty`, as there is no terminal) and print
+  what it did to a few arguments.
 - **Build the image and test it** (Linux): a real `docker build`, then
   - `tests/smoke.sh` runs inside the image: every tool starts and reports the version pinned in
     the Dockerfile, the entrypoint extends `NO_PROXY`, the Terraform plugin cache is set up, and
@@ -713,8 +722,8 @@ real Kubernetes (the end-to-end test uses a fake API server on Linux), and how W
 5.1 behaves at a live prompt (CI has no console there, so the grey suggestions, the Tab menu and
 the Up and Down search are tested with PowerShell 7 and with stand-ins for PSReadLine 2.0). The same
 goes for bash: it is tested on Linux, in Git Bash and on bash 4.2 to 5.3, but not in a live Git Bash
-window (mintty with `winpty`), in a WSL distribution or on a Mac, so those follow the notes in the
-bash section. Run `Import-DockerDesktopKube` (or `devtools-import-kube`) on the laptop for the
+window (mintty with `winpty`, which is only played, see above), in a WSL distribution or on a Mac, so
+those follow the notes in the bash section. Run `Import-DockerDesktopKube` (or `devtools-import-kube`) on the laptop for the
 Kubernetes last mile.
 
 ---
@@ -801,6 +810,15 @@ forward slashes: `cd "C:/Users/you/devtool"`.
 window (mintty) cannot hand its terminal to `docker.exe`. `devtools.sh` goes through `winpty` there
 by itself; if that was switched off (`DEVTOOLS_WINPTY=0`) or `winpty` is missing, use the Windows
 Terminal or the VS Code terminal, or set `DEVTOOLS_WINPTY=1` and install `winpty`.
+
+**In Git Bash, a tool says `the working directory 'C:/.../Git/work' is invalid, it needs to be an
+absolute path`.** `winpty` (see the bash section) rewrote `/work` into a Windows path before docker
+saw it. Copies of `devtools.sh` from before this was fixed handed `winpty` docker's arguments as
+they were. Update the whole project folder (extract the newest zip over it, so that
+`scripts/devtools-pty-run.sh` is there too), open a new Git Bash window and try again.
+`devtools-info` prints a `Terminal` line: `winpty (...)` in the plain Git Bash window and `direct`
+anywhere else. If it still fails, open an issue with the output of `devtools-info` and of the failing
+command, after taking your user name and any cluster names out of it.
 
 **In WSL, `docker was not found on PATH`.** Docker Desktop > Settings > Resources > WSL integration:
 switch on your distribution. A `docker.exe` from Windows is not used on purpose.

@@ -41,9 +41,9 @@ jobs:
             "$sc" --version | sed -n 2p
             "$sc" -s sh scripts/devtools-entrypoint.sh
             "$sc" -s bash devtools.sh setup.sh uninstall.sh \
-              scripts/import-docker-desktop-kube.sh scripts/devtools-complete.sh \
+              scripts/import-docker-desktop-kube.sh scripts/devtools-complete.sh scripts/devtools-pty-run.sh \
               scripts/shell/aliases.sh scripts/shell/az-completion.sh scripts/shell/bashrc \
-              tests/*.sh tests/fakebin/docker
+              tests/*.sh tests/fakebin/docker tests/fakebin/winpty
           } 2>&1 | tee "$RUNNER_TEMP/shellcheck.log"
 
       - name: Compose file renders
@@ -153,7 +153,9 @@ jobs:
 
       # The bash side, in Git Bash (the shell of these steps), against a docker.exe that is native
       # Windows code. That is what makes Git Bash rewrite /work or /subscriptions/x into a Windows
-      # path unless devtools.sh stops it. Once is enough, so only for one of the two PowerShells.
+      # path unless devtools.sh stops it. If this Git has a winpty, the tests also send docker
+      # through it (it rewrites paths on its own account, see scripts/devtools-pty-run.sh).
+      # Once is enough, so only for one of the two PowerShells.
       - name: devtools.sh tests (Git Bash, fake docker.exe)
         id: bashwrap
         if: ${{ !cancelled() && matrix.ps == 'pwsh' }}
@@ -172,7 +174,7 @@ jobs:
       - name: Report results as annotations
         if: always()
         run: |
-          tests/ci-annotate.sh "devtools.sh tests on Windows (Git Bash)" "${{ steps.bashwrap.outcome }}" "$RUNNER_TEMP/bash-wrap.log" '^(bash|FAIL|SKIP|      |ALL|[0-9]+ TEST)'
+          tests/ci-annotate.sh "devtools.sh tests on Windows (Git Bash)" "${{ steps.bashwrap.outcome }}" "$RUNNER_TEMP/bash-wrap.log" '^(bash|FAIL|SKIP|INFO|      |ALL|[0-9]+ TEST)'
           tests/ci-annotate.sh "setup.sh tests on Windows (Git Bash)" "${{ steps.bashsetup.outcome }}" "$RUNNER_TEMP/bash-setup-tests.log" '^(bash|FAIL|SKIP|      |ALL|[0-9]+ TEST)'
           tests/ci-annotate.sh "uninstall.sh tests on Windows (Git Bash)" "${{ steps.bashuninstall.outcome }}" "$RUNNER_TEMP/bash-uninstall-tests.log" '^(bash|FAIL|SKIP|      |ALL|[0-9]+ TEST)'
           tests/ci-annotate.sh "wrapper tests on Windows (${{ matrix.ps }})" "${{ steps.pwsh.outcome }}" "$RUNNER_TEMP/pwsh.log" '^(PowerShell|FAIL|      |ALL|[0-9]+ TEST)'
