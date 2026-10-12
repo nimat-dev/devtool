@@ -449,35 +449,34 @@ if is_windows; then
     printf 'for a in "$@"; do echo "<$a>"; done\n' > "$TMP_POSIX/showargs.sh"
     cat > "$TMP_POSIX/inner.sh" << 'EOF'
 # Runs inside the mintty window. Everything it learns goes into files in $RESULTS.
+if [ -t 0 ]; then echo "stdin is a terminal" > "$RESULTS/env.txt"; else echo "stdin is NOT a terminal" > "$RESULTS/env.txt"; fi
+if [ -t 1 ]; then echo "stdout is a terminal" >> "$RESULTS/env.txt"; else echo "stdout is NOT a terminal" >> "$RESULTS/env.txt"; fi
 {
   echo "TERM_PROGRAM=${TERM_PROGRAM:-}"
   echo "OSTYPE=$OSTYPE"
-  if [ -t 0 ]; then echo "stdin is a terminal"; else echo "stdin is NOT a terminal"; fi
-  if [ -t 1 ]; then echo "stdout is a terminal"; else echo "stdout is NOT a terminal"; fi
   echo "winpty=$(type -P winpty)"
   echo "docker=$(type -P docker.exe)"
-  echo "DEVTOOLS_SH=$DEVTOOLS_SH"
-  echo "PATH=$PATH"
-} > "$RESULTS/env.txt" 2>&1
+} >> "$RESULTS/env.txt" 2>&1
 cd "$WORK" || exit 1
 # What the real winpty hands to the program it starts (INFO only).
 winpty -Xallow-non-tty -Xplain "$BASH" "$SHOWARGS" /work devtools-home:/root --flag=/path plain > "$RESULTS/winpty-args.txt" 2>&1
 export DEVTOOLS_WINPTY=1
 . "$DEVTOOLS_SH" 2> "$RESULTS/err-source.txt"
 echo "source rc=$?, kubectx is: $(type -t kubectx)" >> "$RESULTS/env.txt"
-export DOCKER_ARGS_FILE=$RESULTS/args-kubectx.txt
+export DOCKER_ARGS_FILE=$RESULTS_NATIVE/args-kubectx.txt
 kubectx 2> "$RESULTS/err-kubectx.txt"
 echo "rc=$?" > "$RESULTS/rc-kubectx.txt"
-export DOCKER_ARGS_FILE=$RESULTS/args-snippet.txt
+export DOCKER_ARGS_FILE=$RESULTS_NATIVE/args-snippet.txt
 eval "$SNIPPET" 2> "$RESULTS/err-snippet.txt"
-export DOCKER_ARGS_FILE=$RESULTS/args-exec.txt
+export DOCKER_ARGS_FILE=$RESULTS_NATIVE/args-exec.txt
 kubectl exec -it my-pod -- /bin/sh /no/such/file 2> "$RESULTS/err-exec.txt"
-export DOCKER_ARGS_FILE=$RESULTS/args-fail.txt DOCKER_FORCE_EXIT=3
+export DOCKER_ARGS_FILE=$RESULTS_NATIVE/args-fail.txt DOCKER_FORCE_EXIT=3
 az fail 2> "$RESULTS/err-fail.txt"
 echo "rc=$?" > "$RESULTS/rc-fail.txt"
 echo done > "$RESULTS/done.txt"
 EOF
-    export RESULTS WORK SNIPPET SHOWARGS="$TMP_POSIX/showargs.sh"
+    RESULTS_NATIVE=$(to_native "$RESULTS")      # docker.exe is native code: it needs the Windows form
+    export RESULTS RESULTS_NATIVE WORK SNIPPET SHOWARGS="$TMP_POSIX/showargs.sh"
     ("$MINTTY_BIN" -w hide -h never -l "$RESULTS/screen.log" /usr/bin/bash --norc "$TMP_POSIX/inner.sh" > /dev/null 2>&1 &)
     for i in $(seq 1 120); do
       if [ -f "$RESULTS/done.txt" ]; then break; fi
