@@ -432,37 +432,70 @@ OUT=$("$BASH" "$HELPER" 2>&1) || RC=$?
 check_eq 'and without any argument' "$RC" 2
 check_has 'and says it is not for typing' "$OUT" 'not meant to be run by hand'
 
+# On Windows the real winpty is tried in a real Git Bash window. winpty needs a terminal (without
+# one it stops on an assertion of its own), and a CI machine has none, so a mintty window is opened
+# (hidden), which is what Git Bash is when you start it from the Start menu. A script runs in it
+# and leaves its results in files.
 if is_windows; then
   REAL_WINPTY=$(type -P winpty 2> /dev/null || true)
+  MINTTY_BIN=$(type -P mintty 2> /dev/null || true)
   if [ -z "$REAL_WINPTY" ]; then
     check_skip 'docker through the real winpty' 'this Git for Windows has no winpty'
+  elif [ -z "$MINTTY_BIN" ]; then
+    check_skip 'docker through the real winpty' 'this Git for Windows has no mintty to give it a terminal'
   else
-    # A winpty that works without a terminal (CI has none), found before the real one.
-    mkdir -p "$TMP_POSIX/headless"
-    printf '#!/usr/bin/env bash\nexec "%s" -Xallow-non-tty -Xplain "$@"\n' "$REAL_WINPTY" > "$TMP_POSIX/headless/winpty"
-    chmod +x "$TMP_POSIX/headless/winpty"
+    RESULTS=$TMP_POSIX/mintty-results
+    mkdir -p "$RESULTS"
     printf 'for a in "$@"; do echo "<$a>"; done\n' > "$TMP_POSIX/showargs.sh"
-    probe=$(cd "$WORK" && timeout 45 "$TMP_POSIX/headless/winpty" "$BASH" "$TMP_POSIX/showargs.sh" /work devtools-home:/root --flag=/path plain 2>&1 | tr -d '\r') || true
-    echo "INFO  winpty ($REAL_WINPTY) was asked to start bash with the arguments /work devtools-home:/root --flag=/path plain, and bash received:"
-    printf '%s\n' "$probe" | sed 's/^/INFO    /'
-    if [[ $probe != *'<plain>'* ]]; then
-      check_skip 'docker through the real winpty' 'winpty cannot run without a terminal on this machine'
+    cat > "$TMP_POSIX/inner.sh" << 'EOF'
+# Runs inside the mintty window. Everything it learns goes into files in $RESULTS.
+{
+  echo "TERM_PROGRAM=${TERM_PROGRAM:-}"
+  echo "OSTYPE=$OSTYPE"
+  if [ -t 0 ]; then echo "stdin is a terminal"; else echo "stdin is NOT a terminal"; fi
+  if [ -t 1 ]; then echo "stdout is a terminal"; else echo "stdout is NOT a terminal"; fi
+  echo "winpty=$(type -P winpty)"
+} > "$RESULTS/env.txt" 2>&1
+cd "$WORK" || exit 1
+# What the real winpty hands to the program it starts (INFO only).
+winpty -Xallow-non-tty -Xplain "$BASH" "$SHOWARGS" /work devtools-home:/root --flag=/path plain > "$RESULTS/winpty-args.txt" 2>&1
+export DEVTOOLS_WINPTY=1
+. "$DEVTOOLS_SH"
+export DOCKER_ARGS_FILE=$RESULTS/args-kubectx.txt
+kubectx
+echo "rc=$?" > "$RESULTS/rc-kubectx.txt"
+export DOCKER_ARGS_FILE=$RESULTS/args-snippet.txt
+eval "$SNIPPET"
+export DOCKER_ARGS_FILE=$RESULTS/args-exec.txt
+kubectl exec -it my-pod -- /bin/sh /no/such/file
+export DOCKER_ARGS_FILE=$RESULTS/args-fail.txt DOCKER_FORCE_EXIT=3
+az fail
+echo "rc=$?" > "$RESULTS/rc-fail.txt"
+echo done > "$RESULTS/done.txt"
+EOF
+    export RESULTS WORK SNIPPET SHOWARGS="$TMP_POSIX/showargs.sh"
+    ("$MINTTY_BIN" -w hide -h never /usr/bin/bash --norc "$TMP_POSIX/inner.sh" > /dev/null 2>&1 &)
+    for i in $(seq 1 120); do
+      if [ -f "$RESULTS/done.txt" ]; then break; fi
+      # No sign of the script after 30 seconds: the window did not open.
+      if [ "$i" -ge 30 ] && [ ! -f "$RESULTS/env.txt" ]; then break; fi
+      sleep 1
+    done
+    echo "INFO  a Git Bash window (mintty) was opened to run the real winpty; what it reported:"
+    for f in env.txt winpty-args.txt; do
+      if [ -f "$RESULTS/$f" ]; then tr -d '\r' < "$RESULTS/$f" | sed "s/^/INFO    $f: /"; else echo "INFO    $f: missing"; fi
+    done
+    if [ ! -f "$RESULTS/done.txt" ]; then
+      MSYS2_ARG_CONV_EXCL='*' taskkill /F /IM mintty.exe > /dev/null 2>&1 || true
+      check_skip 'docker through the real winpty' 'the Git Bash window did not run its script on this machine'
     else
-      rm -f "$WINPTY_LOG"
-      MT_TIMEOUT=60 PATH="$TMP_POSIX/headless:$PATH" mt 'kubectx; echo rc=$?'
-      if [ "$RC" -eq 124 ]; then
-        check_fail 'real winpty: kubectx finishes (it did not in 60 seconds)' "$OUT"
-      else
-        check_has 'real winpty: kubectx runs' "$OUT" 'rc=0'
-        check_eq 'real winpty: docker.exe gets a terminal and every argument as typed' "$(last_args)" "$BASE_T|kubectx"
-        MT_TIMEOUT=60 PATH="$TMP_POSIX/headless:$PATH" mt "$SNIPPET"
-        check_eq 'real winpty: awkward arguments (quotes, spaces, empty, glob, /paths) arrive untouched' "$(last_args)" \
-          "$BASE_T|kubectl|patch|deploy|x|-p|{\"a\":\"b c\"}||*|/subscriptions/x|--flag=/path|~|\$HOME|it's|two  spaces|-o|jsonpath={.items[*].metadata.name}"
-        DOCKER_FORCE_EXIT=3 MT_TIMEOUT=60 PATH="$TMP_POSIX/headless:$PATH" mt 'az fail'
-        check_eq "real winpty: docker's exit code comes back" "$RC" 3
-        DOCKER_FAKE_OUTPUT=1 MT_TIMEOUT=60 PATH="$TMP_POSIX/headless:$PATH" mt 'az x'
-        check_has 'real winpty: and what it prints' "$OUT" 'fake docker run ok'
-      fi
+      rargs() { tr -d '\r' < "$RESULTS/$1" | tr '\n' '|' | sed 's/|$//'; }
+      check_eq 'real winpty in mintty: docker.exe gets a terminal and every argument as typed' "$(rargs args-kubectx.txt)" "$BASE_T|kubectx"
+      check_eq 'real winpty in mintty: and kubectx succeeds' "$(tr -d '\r' < "$RESULTS/rc-kubectx.txt")" 'rc=0'
+      check_eq 'real winpty in mintty: awkward arguments (quotes, spaces, empty, glob, /paths) arrive untouched' "$(rargs args-snippet.txt)" \
+        "$BASE_T|kubectl|patch|deploy|x|-p|{\"a\":\"b c\"}||*|/subscriptions/x|--flag=/path|~|\$HOME|it's|two  spaces|-o|jsonpath={.items[*].metadata.name}"
+      check_eq 'real winpty in mintty: kubectl exec with a path' "$(rargs args-exec.txt)" "$BASE_T|kubectl|exec|-it|my-pod|--|/bin/sh|/no/such/file"
+      check_eq "real winpty in mintty: docker's exit code comes back" "$(tr -d '\r' < "$RESULTS/rc-fail.txt")" 'rc=3'
     fi
   fi
 fi
