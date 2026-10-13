@@ -83,7 +83,7 @@ else
   bad "working directory is $(pwd), expected /work"
 fi
 
-for f in import-docker-desktop-kube devtools-entrypoint devtools-complete; do
+for f in import-docker-desktop-kube devtools-entrypoint devtools-complete devtools-ca; do
   p=/usr/local/bin/$f
   if [ -x "$p" ] && ! grep -q $'\r' "$p"; then
     ok "$f is installed, executable and has LF line endings"
@@ -98,6 +98,42 @@ if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -q 'no host kubeconfig'; then
   ok "import-docker-desktop-kube fails cleanly when no kubeconfig is mounted"
 else
   bad "import-docker-desktop-kube without a kubeconfig: rc=$rc output='$out'"
+fi
+
+# ---------------------------------------------------------------------------------------------
+# Trusting a company's certificate authority (TLS inspection). Without a certificate mounted the
+# tools use the system certificates; az and aws would otherwise use lists of their own. The real
+# thing, against a made-up inspecting network, is tests/e2e-tls-inspection.sh.
+# ---------------------------------------------------------------------------------------------
+echo
+echo "--- certificate trust ---"
+check openssl "OpenSSL" openssl version
+for var in REQUESTS_CA_BUNDLE SSL_CERT_FILE CURL_CA_BUNDLE AWS_CA_BUNDLE GIT_SSL_CAINFO; do
+  if [ "${!var:-}" = /etc/ssl/certs/ca-certificates.crt ]; then
+    ok "$var points at the system certificates"
+  else
+    bad "$var is '${!var:-}', expected /etc/ssl/certs/ca-certificates.crt"
+  fi
+done
+az_python=/opt/az/bin/python3
+if az_certs=$("$az_python" -c 'import requests, certifi; print(certifi.where())' 2>&1); then
+  ok "az's own Python is $az_python, with requests; its own certificate list is $az_certs"
+else
+  bad "$az_python cannot import requests and certifi, so devtools-ca cannot test what az trusts: $(printf '%s' "$az_certs" | tail -n 1)"
+fi
+out=$(devtools-ca check 127.0.0.1:9 2>&1)
+rc=$?
+if [ "$rc" -eq 2 ] && printf '%s' "$out" | grep -q 'Could not connect to 127.0.0.1:9'; then
+  ok "devtools-ca check says so when it cannot connect (exit 2)"
+else
+  bad "devtools-ca check 127.0.0.1:9: rc=$rc output='$out'"
+fi
+out=$(devtools-ca 2>&1)
+rc=$?
+if [ "$rc" -eq 1 ] && printf '%s' "$out" | grep -q 'usage: devtools-ca'; then
+  ok "devtools-ca prints its usage when it is given nothing to do"
+else
+  bad "devtools-ca without arguments: rc=$rc output='$out'"
 fi
 
 # ---------------------------------------------------------------------------------------------

@@ -33,6 +33,9 @@ services:
       # Your code. Set REPOS_ROOT in .env to an absolute path to mount real repos;
       # defaults to the ./repos folder in this project so it works out of the box.
       - ${REPOS_ROOT:-./repos}:/repos
+      # Your company's certificate authority, if your network signs HTTPS traffic again (TLS
+      # inspection): every certificate in ./certs is trusted when the container starts, no rebuild.
+      - ./certs:/usr/local/share/devtools-ca:ro
     working_dir: /repos
     environment:
       # Optional, for the aksc / aksup / aksx shortcuts: the resource group and name of your AKS

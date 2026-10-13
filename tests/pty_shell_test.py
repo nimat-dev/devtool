@@ -154,8 +154,9 @@ def tail(text, n=300):
     return repr(re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", text)[-n:])
 
 
-# A docker that answers the Tab-completion question the way devtools-complete would, and writes the
-# arguments of every other call to a file.
+# A docker that answers the Tab-completion question the way devtools-complete would, plays devtools-ca
+# (fetch prints the file DOCKER_CA_FETCH_FILE, check says ok), and writes the arguments of every other
+# call to a file.
 FAKE_DOCKER = r"""#!/usr/bin/env bash
 args=("$@")
 for i in "${!args[@]}"; do
@@ -168,6 +169,12 @@ for i in "${!args[@]}"; do
       terraform:*" ap")              echo apply ;;
     esac
     exit 0
+  fi
+  if [ "${args[$i]}" = devtools-ca ]; then
+    case "${args[$((i + 1))]}" in
+      fetch) cat "$DOCKER_CA_FETCH_FILE"; echo "fake devtools-ca fetch" >&2; exit 0 ;;
+      check) echo "ok: fake check"; exit 0 ;;
+    esac
   fi
 done
 printf '%s\n' "$@" > "$DOCKER_ARGS_FILE"
@@ -213,6 +220,8 @@ def run_pwsh(options, command):
             "PATH": bindir + os.pathsep + env.get("PATH", ""),
             "TERM": "xterm-256color",
             "DOCKER_ARGS_FILE": args_file,
+            "DEVTOOLS_CERTS": os.path.join(work, "certs"),
+            "DOCKER_CA_FETCH_FILE": os.path.join(here, "fixtures", "ca-fetch.pem"),
             "POWERSHELL_UPDATECHECK": "Off",        # no "a new version is available" notice, no network
             "POWERSHELL_TELEMETRY_OPTOUT": "1",
         })
@@ -289,6 +298,27 @@ def pwsh_checks(command, env, module, args_file):
     want = ["devtools:latest", "kubectl", "exec", "-it", "my-pod", "--", "ls", "-la"]
     check("kex pod -- ls -la reaches the container with the double dash", got[-len(want):] == want, repr(got))
 
+    # --- Add-DevToolsCA shows the certificates and asks before it trusts anything --------------------------------
+    certs = env["DEVTOOLS_CERTS"]
+    ask = r"Trust 2 certificate\(s\) like this inside the toolbox\? \(y/N\): "
+    t.mark()
+    t.send("Add-DevToolsCA\r")
+    check("Add-DevToolsCA shows what the network signs with and asks first", t.expect(ask, 20, clean=True), tail(t.buf))
+    t.mark()
+    t.send("n\r")
+    check("answering n changes nothing", t.expect(r"Nothing was changed\.", 10, clean=True) and not os.path.exists(certs), tail(t.buf))
+    t.pump(0.5)
+    t.mark()
+    t.send("Add-DevToolsCA\r")
+    check("asked again", t.expect(ask, 20, clean=True), tail(t.buf))
+    t.mark()
+    t.send("y\r")
+    check("answering y saves the certificates", t.expect(r"Saved [^\n]*example-corp-root-ca-95e7cda0\.crt", 10, clean=True), tail(t.buf))
+    check("and runs the check", t.expect(r"Nothing has to be rebuilt", 10, clean=True), tail(t.buf))
+    check("the file is there", os.path.exists(os.path.join(certs, "example-corp-root-ca-95e7cda0.crt")))
+    shutil.rmtree(certs, ignore_errors=True)       # the later sessions and checks run without a certificate
+    t.pump(0.5)
+
     # --- the keys are handed back --------------------------------------------------------------------------
     run("Remove-Module Devtools", r"PS [^\n]*> ", "Remove-Module works")
     run("(Get-PSReadLineKeyHandler -Bound | Where-Object Key -eq Tab).Function", r"(?<![A-Za-z])Complete\r?\n",
@@ -341,6 +371,8 @@ def run_hostbash(options, command):
             "TERM": "xterm-256color",
             "INPUTRC": os.path.join(work, "inputrc"),        # none: readline's own defaults
             "DOCKER_ARGS_FILE": args_file,
+            "DEVTOOLS_CERTS": os.path.join(work, "certs"),
+            "DOCKER_CA_FETCH_FILE": os.path.join(here, "fixtures", "ca-fetch.pem"),
         })
         open(env["INPUTRC"], "w").close()
         bash = command + ["--noprofile", "--rcfile", rc, "-i"]
@@ -462,6 +494,27 @@ def hostbash_checks(command, env, args_file):
     t.pump(1.5)
     want = ["devtools:latest", "kubectl", "exec", "-it", "my-pod", "--", "ls", "-la"]
     check("kex pod -- ls -la reaches the container with the double dash", last_args()[-len(want):] == want, repr(last_args()))
+
+    # --- devtools-add-ca shows the certificates and asks before it trusts anything -------------------------------
+    certs = env["DEVTOOLS_CERTS"]
+    ask = r"Trust 2 certificate\(s\) like this inside the toolbox\? \(y/N\) "
+    t.mark()
+    t.send("devtools-add-ca\r")
+    check("devtools-add-ca shows what the network signs with and asks first", t.expect(ask, 20, clean=True), tail(t.buf))
+    t.mark()
+    t.send("n\r")
+    check("answering n changes nothing", t.expect(r"Nothing was changed\.", 10, clean=True) and not os.path.exists(certs), tail(t.buf))
+    t.pump(0.5)
+    t.mark()
+    t.send("devtools-add-ca\r")
+    check("asked again", t.expect(ask, 20, clean=True), tail(t.buf))
+    t.mark()
+    t.send("y\r")
+    check("answering y saves the certificates", t.expect(r"Saved [^\n]*example-corp-root-ca-95e7cda0\.crt", 10, clean=True), tail(t.buf))
+    check("and runs the check", t.expect(r"Nothing has to be rebuilt", 10, clean=True), tail(t.buf))
+    check("the file is there", os.path.exists(os.path.join(certs, "example-corp-root-ca-95e7cda0.crt")))
+    shutil.rmtree(certs, ignore_errors=True)       # the later sessions and checks run without a certificate
+    t.pump(0.5)
 
     # --- the keys are handed back ---------------------------------------------------------------------------------
     run("devtools-unload", r"HB> ", "devtools-unload works")

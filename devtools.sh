@@ -22,12 +22,17 @@
 #     History         the Up and Down arrows search your history for what you have typed
 #
 # Commands this adds besides the tools: dev, devtools-info, devtools-alias, devtools-import-kube,
-# devtools-unload.
+# devtools-add-ca, devtools-unload.
+#
+# On a network that signs HTTPS traffic again with a company certificate (az stops with "self-signed
+# certificate in certificate chain"), devtools-add-ca finds that certificate and makes the toolbox trust it.
 #
 # Optional overrides (set before sourcing, e.g. in ~/.bashrc):
 #     DEVTOOLS_IMAGE=devtools:latest      image tag to run
 #     DEVTOOLS_VOLUME=devtools-home       named volume that keeps your logins
 #     DEVTOOLS_BASH_ALIASES=FILE          your shortcuts file (default ~/.devtools-aliases.sh)
+#     DEVTOOLS_CERTS=DIR                  folder with your company's CA certificates (default: certs
+#                                         next to this file)
 #     DEVTOOLS_NO_READLINE=1              leave the arrow keys and readline settings alone
 #     DEVTOOLS_WINPTY=auto|1|0            Git Bash in the mintty window needs winpty for an
 #                                         interactive docker; auto uses it there and nowhere else
@@ -52,6 +57,17 @@ _DEVTOOLS_ALIASES_FILE=${DEVTOOLS_BASH_ALIASES:-$HOME/.devtools-aliases.sh}
 _DEVTOOLS_DIR=${BASH_SOURCE[0]%/*}
 if [ "$_DEVTOOLS_DIR" = "${BASH_SOURCE[0]}" ]; then _DEVTOOLS_DIR=.; fi
 _DEVTOOLS_DIR=$(CDPATH='' cd -- "$_DEVTOOLS_DIR" 2> /dev/null && pwd) || _DEVTOOLS_DIR=
+
+# Your company's certificate authority: every certificate in this folder is trusted in the container.
+# docker takes a relative path in -v for the name of a volume, so ~ and relative paths become full ones.
+_DEVTOOLS_CERTS_DIR=${DEVTOOLS_CERTS:-$_DEVTOOLS_DIR/certs}
+# shellcheck disable=SC2088  # the ~ is matched as text: a ~ in a variable is not expanded by the shell
+case $_DEVTOOLS_CERTS_DIR in
+  '~') _DEVTOOLS_CERTS_DIR=$HOME ;;
+  '~/'*) _DEVTOOLS_CERTS_DIR=$HOME/${_DEVTOOLS_CERTS_DIR#'~/'} ;;
+  /* | ?:[\\/]*) ;;
+  *) _DEVTOOLS_CERTS_DIR=$PWD/$_DEVTOOLS_CERTS_DIR ;;
+esac
 
 # Git Bash (MSYS2) and Cygwin start native Windows programs, which docker.exe is.
 case "${OSTYPE:-}" in
@@ -152,17 +168,34 @@ _devtools_use_winpty() {
 # True when a person is at the keyboard and the screen. Only then does docker get a terminal.
 _devtools_is_tty() { [ -t 0 ] && [ -t 1 ]; }
 
+# True when the certs folder holds a certificate file (*.crt, *.cer, *.pem, in any case).
+_devtools_has_certs() {
+  local f
+  [ -d "$_DEVTOOLS_CERTS_DIR" ] || return 1
+  for f in "$_DEVTOOLS_CERTS_DIR"/*; do
+    case $f in
+      *.[cC][rR][tT] | *.[cC][eE][rR] | *.[pP][eE][mM]) if [ -f "$f" ]; then return 0; fi ;;
+    esac
+  done
+  return 1
+}
+
 # Fills _DEVTOOLS_RUN with the docker arguments every call shares (up to the image name) and
-# _DEVTOOLS_PTY with --winpty when docker has to go through winpty.
+# _DEVTOOLS_PTY with --winpty when docker has to go through winpty. With --no-tty the output is
+# going to be read by a script, so docker never gets a terminal.
 _devtools_prepare() {
   _DEVTOOLS_RUN=(run --rm -i)
   _DEVTOOLS_PTY=
   # A TTY only for genuine interactive use: with -t, piped or captured output gets corrupted.
-  if _devtools_is_tty; then
+  if [ "${1:-}" != --no-tty ] && _devtools_is_tty; then
     _DEVTOOLS_RUN+=(-t)
     if _devtools_use_winpty; then _DEVTOOLS_PTY=--winpty; fi
   fi
   _DEVTOOLS_RUN+=(-v "${DEVTOOLS_VOLUME}:/root" -v "$(_devtools_hostpath "$PWD"):/work" -w /work)
+  # Your company's certificates, when there are any: the container trusts them as it starts.
+  if _devtools_has_certs; then
+    _DEVTOOLS_RUN+=(-v "$(_devtools_hostpath "$_DEVTOOLS_CERTS_DIR"):/usr/local/share/devtools-ca:ro")
+  fi
   return 0
 }
 
@@ -223,14 +256,167 @@ devtools-import-kube() {
   return "$code"
 }
 
+# devtools-ca (inside the image) in a container. What it prints on stdout is the output of this
+# function; what it says on stderr goes straight to the screen.
+#   _devtools_ca [--mount SPEC] ARG...
+_devtools_ca() {
+  local mount=''
+  if [ "${1:-}" = --mount ]; then
+    mount=$2
+    shift 2
+  fi
+  _devtools_prepare --no-tty
+  _devtools_docker "${_DEVTOOLS_RUN[@]}" ${mount:+-v "$mount"} "$DEVTOOLS_IMAGE" devtools-ca "$@"
+}
+
+# Saves PEM text (certificates, with the comment lines devtools-ca puts above each) as one file in the
+# certs folder, named after the last certificate in it: the root. Prints the path of the file.
+_devtools_save_certs() {
+  local pem=${1//$'\r'/} subject='' sha='' cn slug file
+  { IFS= read -r subject; IFS= read -r sha; } < <(printf '%s\n' "$pem" | awk '
+    /^# / { older = newer; newer = $0 }
+    /-----BEGIN CERTIFICATE-----/ { s = older; h = newer }
+    END { print s; print h }')
+  subject=${subject#\# }
+  sha=${sha#\# sha256 }
+  sha=${sha//:/}
+  sha=${sha,,}
+  slug=proxy-ca
+  if [[ $subject =~ (^|,)CN=([^,]+) ]]; then
+    cn=${BASH_REMATCH[2],,}
+    cn=${cn//[^a-z0-9]/-}
+    while [[ $cn == *--* ]]; do cn=${cn//--/-}; done
+    cn=${cn#-}
+    cn=${cn:0:40}
+    cn=${cn%-}
+    if [ -n "$cn" ]; then slug=$cn; fi
+  fi
+  if [ -z "${sha:0:8}" ]; then sha=$(printf '%s' "$pem" | cksum); sha=${sha%% *}; fi
+  mkdir -p -- "$_DEVTOOLS_CERTS_DIR" || return 1
+  file=$_DEVTOOLS_CERTS_DIR/$slug-${sha:0:8}.crt
+  printf '%s\n' "$pem" > "$file" || return 1
+  printf '%s\n' "$file"
+}
+
+# Makes the toolbox trust your company's certificate authority.
+#
+# Some company networks open every HTTPS connection and sign it again with their own certificate.
+# Your computer trusts that authority (IT installed it), but the toolbox does not, and az stops with
+# "self-signed certificate in certificate chain". With no arguments this looks at what the network
+# presents for login.microsoftonline.com, shows the certificates behind it, and after you agree saves
+# them in the certs folder. The next command you run trusts them; the image does not have to be rebuilt.
+#
+#   devtools-add-ca                     find it, show it, ask
+#   devtools-add-ca --yes               the same, without asking
+#   devtools-add-ca corp-root.cer       add a certificate file you already have (PEM, DER or .p7b)
+#   devtools-add-ca --host example.com  another host to look at
+devtools-add-ca() {
+  local host=login.microsoftonline.com yes='' pem='' out code file full answer count
+  local -a files=()
+  local rebuild='This image has no devtools-ca yet. Rebuild it first:  docker compose build'
+  while [ "$#" -gt 0 ]; do
+    case $1 in
+      -y | --yes) yes=1 ;;
+      --host)
+        if [ -z "${2:-}" ]; then
+          echo "devtools-add-ca: --host needs a host name" >&2
+          return 2
+        fi
+        host=$2
+        shift ;;
+      -h | --help)
+        echo "usage: devtools-add-ca [--yes] [--host HOST] [FILE...]"
+        return 0 ;;
+      -*)
+        echo "devtools-add-ca: unknown option $1" >&2
+        return 2 ;;
+      *) files+=("$1") ;;
+    esac
+    shift
+  done
+  if ! _devtools_find_docker; then
+    _devtools_say_no_docker
+    return 127
+  fi
+
+  if [ "${#files[@]}" -gt 0 ]; then
+    for file in "${files[@]}"; do
+      if [ ! -f "$file" ]; then
+        echo "There is no file $file" >&2
+        return 1
+      fi
+      full=$(CDPATH='' cd -- "$(dirname -- "$file")" && pwd)/$(basename -- "$file")
+      # The container checks that it is a certificate and hands it back as PEM.
+      out=$(_devtools_ca --mount "$(_devtools_hostpath "$full"):/devtools-ca-in/cert:ro" normalize /devtools-ca-in/cert)
+      code=$?
+      if [ "$code" -eq 127 ]; then
+        echo "$rebuild" >&2
+        return 1
+      fi
+      if [ "$code" -ne 0 ]; then return 1; fi      # devtools-ca has said what is wrong with the file
+      pem=${pem:+$pem$'\n'}${out//$'\r'/}
+    done
+  else
+    out=$(_devtools_ca fetch "$host")
+    code=$?
+    case $code in
+      0) pem=${out//$'\r'/} ;;
+      10)
+        echo "Nothing to add: HTTPS to $host already works in the toolbox."
+        return 0 ;;
+      11)
+        echo "The network does not send its root CA. Get that certificate from IT, or export it (README), then:  devtools-add-ca FILE" >&2
+        return 1 ;;
+      127)
+        echo "$rebuild" >&2
+        return 1 ;;
+      *)
+        echo "Could not find the certificate (devtools-ca exited with $code); what it said is above." >&2
+        return 1 ;;
+    esac
+    if [ -z "$yes" ]; then
+      if [ ! -t 0 ]; then
+        echo "This asks you to confirm, and there is nobody to ask here. Run it again with --yes if you agree." >&2
+        return 1
+      fi
+      count=$(printf '%s\n' "$pem" | grep -c -e '-----BEGIN CERTIFICATE-----')
+      read -r -p "Trust $count certificate(s) like this inside the toolbox? (y/N) " answer
+      case $answer in
+        y | Y | yes | YES | Yes) ;;
+        *)
+          echo "Nothing was changed."
+          return 0 ;;
+      esac
+    fi
+  fi
+
+  file=$(_devtools_save_certs "$pem") || return 1
+  echo "Saved $file"
+  out=$(_devtools_ca check "$host")
+  code=$?
+  printf '%s\n' "${out//$'\r'/}"
+  if [ "$code" -eq 0 ]; then
+    echo "az, kubectl, terraform and the rest trust it from the next command on. Nothing has to be rebuilt."
+  else
+    echo "warning: HTTPS to $host still does not verify. Remove $file if it was the wrong certificate." >&2
+    return 1
+  fi
+}
+
 # Show what the wrappers are pointed at.
 devtools-info() {
-  local docker terminal=direct
+  local docker terminal=direct certs=0 f
   if _devtools_find_docker; then docker=$(type -P "$_DEVTOOLS_DOCKER"); else docker='not found on PATH'; fi
   if _devtools_use_winpty; then terminal='winpty (this Git Bash window needs it for docker -t)'; fi
+  for f in "$_DEVTOOLS_CERTS_DIR"/*; do
+    case $f in
+      *.[cC][rR][tT] | *.[cC][eE][rR] | *.[pP][eE][mM]) if [ -f "$f" ]; then certs=$((certs + 1)); fi ;;
+    esac
+  done
   printf '%-12s %s\n' Image "$DEVTOOLS_IMAGE" Volume "$DEVTOOLS_VOLUME" \
     Tools 'az, kubectl, terraform, flux, helm, kustomize, azd, gh, kubectx, kubens, dev' \
-    AliasesFile "$_DEVTOOLS_ALIASES_FILE" Docker "$docker" Terminal "$terminal"
+    AliasesFile "$_DEVTOOLS_ALIASES_FILE" Docker "$docker" Terminal "$terminal" \
+    CertsFolder "$_DEVTOOLS_CERTS_DIR" CertFiles "$certs"
 }
 
 # ---- Shortcuts -------------------------------------------------------------------------------------
@@ -447,12 +633,12 @@ devtools-unload() {
   for name in "${_DEVTOOLS_ALIAS_NAMES[@]}"; do complete -r "$name" 2> /dev/null; done
   for binding in "${_DEVTOOLS_KEYS_UNDO[@]+"${_DEVTOOLS_KEYS_UNDO[@]}"}"; do bind "$binding" 2> /dev/null; done
   unset -f az kubectl terraform flux helm kustomize azd gh kubectx kubens dev aksc aksup aksx \
-    devtools-import-kube devtools-info devtools-alias \
+    devtools-import-kube devtools-info devtools-alias devtools-add-ca \
     _devtools_say_no_docker _devtools_find_docker _devtools_hex _devtools_docker _devtools_hostpath \
-    _devtools_use_winpty _devtools_is_tty _devtools_prepare \
+    _devtools_use_winpty _devtools_is_tty _devtools_has_certs _devtools_prepare _devtools_ca _devtools_save_certs \
     _devtools_run _devtools_complete _devtools_register_completion _devtools_readline
   unset DEVTOOLS_IMAGE DEVTOOLS_VOLUME \
-    _DEVTOOLS_ALIASES_FILE _DEVTOOLS_DIR _DEVTOOLS_WINDOWS _DEVTOOLS_COMPLETABLE _DEVTOOLS_RUN _DEVTOOLS_PTY _DEVTOOLS_DOCKER \
+    _DEVTOOLS_ALIASES_FILE _DEVTOOLS_DIR _DEVTOOLS_CERTS_DIR _DEVTOOLS_WINDOWS _DEVTOOLS_COMPLETABLE _DEVTOOLS_RUN _DEVTOOLS_PTY _DEVTOOLS_DOCKER \
     _DEVTOOLS_ALIAS_NAMES _DEVTOOLS_SNAPSHOT _DEVTOOLS_PERSONAL _DEVTOOLS_OVERRIDDEN _DEVTOOLS_SPECIAL _DEVTOOLS_KEYS_UNDO
   unset -f devtools-unload
   return 0

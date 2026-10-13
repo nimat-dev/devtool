@@ -58,6 +58,8 @@ RUN DEBIAN_FRONTEND=noninteractive apt-get update \
 # Corporate root CA (optional). Drop any *.crt into ./certs before building and
 # it gets trusted here; with an empty certs/ this is a harmless no-op. This must
 # run before the HTTPS downloads below so TLS interception doesn't break them.
+# That is the build. For the tools you run (az above all), certs/ is also read when a
+# container starts, so adding a certificate later needs no rebuild (devtools-entrypoint).
 # ---------------------------------------------------------------------------
 COPY certs/ /usr/local/share/ca-certificates/extra/
 RUN if ls -A /usr/local/share/ca-certificates/extra/*.crt >/dev/null 2>&1; then \
@@ -209,14 +211,17 @@ WORKDIR /work
 
 # ---------------------------------------------------------------------------
 # Helper scripts.
-#   devtools-entrypoint          keeps Docker Desktop host traffic off the corporate proxy
+#   devtools-entrypoint          keeps Docker Desktop host traffic off the corporate proxy and
+#                                trusts the certificates in certs/ (TLS inspection)
 #   import-docker-desktop-kube   copies the docker-desktop kube context into the toolbox
+#   devtools-ca                  shows what a network does to HTTPS and fetches its CA certificate
 # sed strips CRs in case Windows git checked the files out with CRLF line endings.
 # ---------------------------------------------------------------------------
 COPY scripts/devtools-entrypoint.sh /usr/local/bin/devtools-entrypoint
 COPY scripts/import-docker-desktop-kube.sh /usr/local/bin/import-docker-desktop-kube
-RUN sed -i 's/\r$//' /usr/local/bin/devtools-entrypoint /usr/local/bin/import-docker-desktop-kube \
- && chmod 0755 /usr/local/bin/devtools-entrypoint /usr/local/bin/import-docker-desktop-kube
+COPY scripts/devtools-ca.sh /usr/local/bin/devtools-ca
+RUN sed -i 's/\r$//' /usr/local/bin/devtools-entrypoint /usr/local/bin/import-docker-desktop-kube /usr/local/bin/devtools-ca \
+ && chmod 0755 /usr/local/bin/devtools-entrypoint /usr/local/bin/import-docker-desktop-kube /usr/local/bin/devtools-ca
 
 # ===========================================================================
 # ---- EXTRA TOOLS ----
@@ -252,11 +257,13 @@ RUN curl -fsSLo /tmp/kubectx.tar.gz "https://github.com/ahmetb/kubectx/releases/
 # history as you type, syntax colours, Tab completion for every tool, and the shortcut aliases.
 # bash gets the same aliases and completion. Kept below the tools so the layers above stay cached.
 # DL3008 ignored: a dev toolbox tracks current, security-patched packages.
+# openssl is already there (ca-certificates needs it); devtools-ca depends on it, so it is named here.
 # ---------------------------------------------------------------------------
 # hadolint ignore=DL3008
 RUN DEBIAN_FRONTEND=noninteractive apt-get update \
  && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
       bash-completion \
+      openssl \
       zsh \
       zsh-autosuggestions \
       zsh-syntax-highlighting \
@@ -289,6 +296,20 @@ RUN sed -i 's/\r$//' /etc/devtools/* /usr/local/bin/devtools-complete \
       || { echo "WARNING: could not generate shell completion for gh"; \
            rm -f /usr/share/bash-completion/completions/gh /usr/share/zsh/vendor-completions/_gh; }; } \
  && zsh -c 'autoload -Uz compinit && compinit -u'
+
+# ---------------------------------------------------------------------------
+# Certificates. Azure CLI and the AWS CLI keep a list of trusted certificates of their own and
+# ignore the system's, so on a network that signs HTTPS traffic again with a company certificate
+# (TLS inspection) az fails with "self-signed certificate in certificate chain" even when the
+# company CA is installed above. These point them, and curl and git, at the system bundle that
+# update-ca-certificates maintains (the Go tools read it anyway). devtools-entrypoint swaps in a
+# longer bundle when certs/ is mounted. At the very end so the layers above stay cached.
+# ---------------------------------------------------------------------------
+ENV REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt \
+    SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt \
+    CURL_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt \
+    AWS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt \
+    GIT_SSL_CAINFO=/etc/ssl/certs/ca-certificates.crt
 
 ENTRYPOINT ["/usr/local/bin/devtools-entrypoint"]
 CMD ["zsh"]
