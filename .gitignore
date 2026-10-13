@@ -2,9 +2,6 @@
 *.zip
 repos/*
 !repos/.gitkeep
-# Your company's certificates stay on your computer. Any capitalisation: Windows saves ROOT.CER.
-certs/*.[cC][rR][tT]
-certs/*.[cC][eE][rR]
-certs/*.[pP][eE][mM]
-certs/*.[pP]7[bBcC]
+certs/*.crt
+certs/*.pem
 __pycache__/

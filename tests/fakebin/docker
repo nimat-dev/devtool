@@ -16,10 +16,6 @@
 #                      `docker rm ...` empties it (so removing containers really removes them)
 #   DOCKER_VOLUMES     volume names that exist, separated by spaces: `docker volume inspect NAME`
 #                      exits 0 for those and 1 for any other name (default: none exist)
-#   DOCKER_CA_FETCH_FILE, DOCKER_CA_FETCH_EXIT          `docker run ... devtools-ca fetch HOST`: prints that file,
-#                      says one line on stderr and exits with the code (default 0)
-#   DOCKER_CA_NORMALIZE_FILE, DOCKER_CA_NORMALIZE_EXIT  the same for `devtools-ca normalize FILE`
-#   DOCKER_CA_CHECK_EXIT                                `devtools-ca check HOST`: "ok: ..." and 0, or "FAILED: ..." and the code
 : "${DOCKER_ARGS_FILE:=/tmp/docker_args.txt}"
 printf '%s\n' "$@" > "$DOCKER_ARGS_FILE"
 if [ -n "${DOCKER_LOG_FILE:-}" ]; then echo "$*" >> "$DOCKER_LOG_FILE"; fi
@@ -41,26 +37,7 @@ case "${1:-}" in
     esac ;;
   build) exit "${DOCKER_BUILD_EXIT:-0}" ;;
   image) exit "${DOCKER_IMAGE_EXIT:-0}" ;;
-  run)   # devtools-ca, which Add-DevToolsCA and devtools-add-ca run: canned answers for its three verbs
-         for ((i = 1; i < $#; i++)); do
-           if [ "${!i}" = devtools-ca ]; then
-             j=$((i + 1))
-             case "${!j}" in
-               fetch)
-                 if [ -n "${DOCKER_CA_FETCH_FILE:-}" ]; then cat "$DOCKER_CA_FETCH_FILE"; fi
-                 echo "fake devtools-ca fetch" >&2
-                 exit "${DOCKER_CA_FETCH_EXIT:-0}" ;;
-               normalize)
-                 if [ -n "${DOCKER_CA_NORMALIZE_FILE:-}" ]; then cat "$DOCKER_CA_NORMALIZE_FILE"; fi
-                 exit "${DOCKER_CA_NORMALIZE_EXIT:-0}" ;;
-               check)
-                 code=${DOCKER_CA_CHECK_EXIT:-0}
-                 if [ "$code" -eq 0 ]; then echo "ok: fake check"; else echo "FAILED: fake check"; fi
-                 exit "$code" ;;
-             esac
-           fi
-         done
-         if [ -n "${DOCKER_FAKE_OUTPUT:-}" ]; then echo "fake docker run ok"; fi
+  run)   if [ -n "${DOCKER_FAKE_OUTPUT:-}" ]; then echo "fake docker run ok"; fi
          if [ -n "${DOCKER_RUN_FILE:-}" ] && [ -f "$DOCKER_RUN_FILE" ]; then cat "$DOCKER_RUN_FILE"; fi ;;
   ps)    if [ -n "${DOCKER_PS_FILE:-}" ] && [ -f "$DOCKER_PS_FILE" ]; then cat "$DOCKER_PS_FILE"; fi ;;
   rm)    if [ -n "${DOCKER_PS_FILE:-}" ]; then : > "$DOCKER_PS_FILE"; fi ;;

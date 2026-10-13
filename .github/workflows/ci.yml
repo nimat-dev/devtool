@@ -41,7 +41,7 @@ jobs:
             "$sc" --version | sed -n 2p
             "$sc" -s sh scripts/devtools-entrypoint.sh
             "$sc" -s bash devtools.sh setup.sh uninstall.sh \
-              scripts/import-docker-desktop-kube.sh scripts/devtools-complete.sh scripts/devtools-pty-run.sh scripts/devtools-ca.sh \
+              scripts/import-docker-desktop-kube.sh scripts/devtools-complete.sh scripts/devtools-pty-run.sh \
               scripts/shell/aliases.sh scripts/shell/az-completion.sh scripts/shell/bashrc \
               tests/*.sh tests/fakebin/docker tests/fakebin/winpty
           } 2>&1 | tee "$RUNNER_TEMP/shellcheck.log"
@@ -83,11 +83,6 @@ jobs:
         if: ${{ !cancelled() }}
         run: bash tests/test-uninstall-sh.sh 2>&1 | tee "$RUNNER_TEMP/bash-uninstall-tests.log"
 
-      - name: Company certificates (devtools-ca, the container start-up, against local servers)
-        id: castep
-        if: ${{ !cancelled() }}
-        run: bash tests/test-ca.sh 2>&1 | tee "$RUNNER_TEMP/ca-tests.log"
-
       - name: bash on your machine in a real terminal (Tab completion, history search, -t)
         id: ptyhostbash
         if: ${{ !cancelled() }}
@@ -124,7 +119,6 @@ jobs:
           tests/ci-annotate.sh "devtools.sh tests" "${{ steps.bashwrap.outcome }}" "$RUNNER_TEMP/bash-wrap.log" '^(bash|FAIL|SKIP|      |ALL|[0-9]+ TEST)'
           tests/ci-annotate.sh "setup.sh tests" "${{ steps.bashsetup.outcome }}" "$RUNNER_TEMP/bash-setup-tests.log" '^(bash|FAIL|SKIP|      |ALL|[0-9]+ TEST)'
           tests/ci-annotate.sh "uninstall.sh tests" "${{ steps.bashuninstall.outcome }}" "$RUNNER_TEMP/bash-uninstall-tests.log" '^(bash|FAIL|SKIP|      |ALL|[0-9]+ TEST)'
-          tests/ci-annotate.sh "company certificate tests" "${{ steps.castep.outcome }}" "$RUNNER_TEMP/ca-tests.log" '^(bash|==|FAIL|SKIP|      |ALL|[0-9]+ TEST)'
           tests/ci-annotate.sh "bash terminal test (devtools.sh)" "${{ steps.ptyhostbash.outcome }}" "$RUNNER_TEMP/pty-hostbash.log" '^(PASS|FAIL|      |ALL|[0-9]+ SHELL)'
           tests/ci-annotate.sh "bash tests on bash 4.2 and 4.3" "${{ steps.oldbash.outcome }}" "$RUNNER_TEMP/old-bash.log" '^(==|bash |FAIL|SKIP|      |ALL|[0-9]+ TEST)'
 
@@ -370,14 +364,6 @@ jobs:
           test -z "$(docker image ls -q devtools:latest)"
           test -z "$(volumes)"
 
-      # Last, so that a problem here does not hide the steps above and the container it starts leaves
-      # nothing behind for them to count. The uninstall steps above only untag devtools:latest; this
-      # one runs the devtools:ci tag of the same image.
-      - name: Company network that re-signs HTTPS (az, curl, git, kubectl, helm, aws; the wrappers add the CA)
-        id: e2eca
-        if: ${{ !cancelled() }}
-        run: tests/e2e-tls-inspection.sh devtools:ci 2>&1 | tee "$RUNNER_TEMP/e2e-ca.log"
-
       - name: Report results as annotations
         if: always()
         run: |
@@ -386,7 +372,6 @@ jobs:
           tests/ci-annotate.sh "terminal test, zsh" "${{ steps.ptyzsh.outcome }}" "$RUNNER_TEMP/pty-zsh.log" '^(PASS|FAIL|      |ALL|[0-9]+ SHELL)'
           tests/ci-annotate.sh "terminal test, bash" "${{ steps.ptybash.outcome }}" "$RUNNER_TEMP/pty-bash.log" '^(PASS|FAIL|      |ALL|[0-9]+ SHELL)'
           tests/ci-annotate.sh "importer end to end" "${{ steps.e2e.outcome }}" "$RUNNER_TEMP/e2e.log" '^(PASS|FAIL|RESULT|==|\[setup\]|fake API|PKI|      \|)'
-          tests/ci-annotate.sh "company network that re-signs HTTPS" "${{ steps.e2eca.outcome }}" "$RUNNER_TEMP/e2e-ca.log" '^(image|FAIL|INFO|==|      |ALL|[0-9]+ TEST)'
           tests/ci-annotate.sh "setup.ps1 on real Docker" "${{ steps.setup.outcome }}" "$RUNNER_TEMP/setup-real.log" '^(==|  OK|  WARN|  FAIL|All set|DevOps toolbox)'
           tests/ci-annotate.sh "setup.sh on real Docker" "${{ steps.setupsh.outcome }}" "$RUNNER_TEMP/setup-sh-real.log" '^(==|  OK|  WARN|  FAIL|All set|DevOps toolbox)'
           tests/ci-annotate.sh "bash wrappers on real Docker" "${{ steps.setupsh.outcome }}" "$RUNNER_TEMP/bash-real.log" '^(#|tools|Terraform|Client|from stdin|the-folder|\[)'
@@ -412,10 +397,6 @@ jobs:
             echo '## Importer end to end'
             echo '```'
             cat "$RUNNER_TEMP/e2e.log" 2>/dev/null || echo 'did not run'
-            echo '```'
-            echo '## Company network that re-signs HTTPS'
-            echo '```'
-            cat "$RUNNER_TEMP/e2e-ca.log" 2>/dev/null || echo 'did not run'
             echo '```'
             echo '## setup.ps1 on the real Docker engine'
             echo '```'

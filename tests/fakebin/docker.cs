@@ -17,39 +17,6 @@ public static class FakeDocker
         return fallback;
     }
 
-    // The text of the file named by an environment variable, if there is one.
-    static void Cat(string name)
-    {
-        string path = Environment.GetEnvironmentVariable(name);
-        if (!string.IsNullOrEmpty(path) && File.Exists(path))
-        {
-            Console.Write(File.ReadAllText(path));
-        }
-    }
-
-    // devtools-ca (Add-DevToolsCA, devtools-add-ca): canned answers for its three verbs.
-    static int DevtoolsCa(string verb)
-    {
-        if (verb == "fetch")
-        {
-            Cat("DOCKER_CA_FETCH_FILE");
-            Console.Error.WriteLine("fake devtools-ca fetch");
-            return Code("DOCKER_CA_FETCH_EXIT", 0);
-        }
-        if (verb == "normalize")
-        {
-            Cat("DOCKER_CA_NORMALIZE_FILE");
-            return Code("DOCKER_CA_NORMALIZE_EXIT", 0);
-        }
-        if (verb == "check")
-        {
-            int code = Code("DOCKER_CA_CHECK_EXIT", 0);
-            Console.WriteLine(code == 0 ? "ok: fake check" : "FAILED: fake check");
-            return code;
-        }
-        return Code("DOCKER_FORCE_EXIT", 0);
-    }
-
     public static int Main(string[] args)
     {
         string file = Environment.GetEnvironmentVariable("DOCKER_ARGS_FILE");
@@ -103,16 +70,6 @@ public static class FakeDocker
         if (first == "image")
         {
             return Code("DOCKER_IMAGE_EXIT", 0);
-        }
-        if (first == "run")
-        {
-            for (int i = 0; i < args.Length - 1; i++)
-            {
-                if (args[i] == "devtools-ca")
-                {
-                    return DevtoolsCa(args[i + 1]);
-                }
-            }
         }
         if (first == "run" && !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("DOCKER_FAKE_OUTPUT")))
         {

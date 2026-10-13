@@ -2,4 +2,3 @@
 Dockerfile text eol=lf
 tests/fakebin/* text eol=lf
 scripts/shell/* text eol=lf
-tests/fixtures/* text eol=lf

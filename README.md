@@ -167,7 +167,6 @@ its own. The prompt tells you which one you are in:
 | Image, volume, tools | `Get-DevToolsInfo` | `devtools-info` |
 | List the shortcuts | `Get-DevToolsAlias` or `Get-DevToolsAlias 'kg*'` | `devtools-alias` or `devtools-alias 'kg*'` |
 | Import Docker Desktop's Kubernetes | `Import-DockerDesktopKube` | `devtools-import-kube` |
-| Trust your company's certificate | `Add-DevToolsCA` | `devtools-add-ca` |
 | A shell inside the toolbox | `dev` | `dev` |
 | Your own shortcuts | `~/.devtools-aliases.ps1` | `~/.devtools-aliases.sh` |
 | Switch the tools off in this window | `Remove-Module Devtools` | `devtools-unload` |
@@ -296,8 +295,8 @@ Exit code: `0` all good, `1` setup could not finish, `2` setup finished but some
 ### What is called differently from PowerShell
 
 The tools and the shortcuts are typed the same way. The helper commands have bash names:
-`devtools-info`, `devtools-alias`, `devtools-import-kube [CONTEXT] [KUBECONFIG]`,
-`devtools-add-ca [--yes] [--host HOST] [FILE...]` and `devtools-unload`. They are listed next to their PowerShell names in
+`devtools-info`, `devtools-alias`, `devtools-import-kube [CONTEXT] [KUBECONFIG]` and
+`devtools-unload`. They are listed next to their PowerShell names in
 [PowerShell or bash](#powershell-or-bash-which-commands-go-where). `devtools-alias 'kg*'` filters
 the list and `devtools-alias --count` counts it. `dev` opens zsh inside the toolbox (`dev bash` for
 bash). Your own shortcuts go in `~/.devtools-aliases.sh`: aliases or functions, read last, so it
@@ -339,7 +338,6 @@ distribution; Docker Desktop's kubeconfig is the Windows one, so use
 | `DEVTOOLS_BASH_ALIASES` | the file for your own shortcuts (default `~/.devtools-aliases.sh`) |
 | `DEVTOOLS_NO_READLINE` | `1` leaves the arrow keys and readline settings alone |
 | `DEVTOOLS_WINPTY` | `auto` (default), `1` or `0`: whether docker runs through `winpty` in Git Bash |
-| `DEVTOOLS_CERTS` | the folder with your company's certificates (default `certs` next to `devtools.sh`) |
 | `AKS_RG`, `AKS_NAME` | your cluster, for `aksc`, `aksup`, `aksx`; `dev` hands them to the shell inside |
 
 Set them before the line in `~/.bashrc` that loads the toolbox. `devtools.sh` needs bash 4.2 or
@@ -465,87 +463,7 @@ the tool takes too long, nothing is offered and file names complete as usual.
 | --- | --- |
 | `DEVTOOLS_ALIASES` | the file for your own shortcuts (default `~/.devtools-aliases.ps1`) |
 | `DEVTOOLS_NO_READLINE` | `1` leaves PSReadLine alone |
-| `DEVTOOLS_CERTS` | the folder with your company's certificates (default `certs` next to `Devtools.psm1`) |
 | `AKS_RG`, `AKS_NAME` | your cluster, for `aksc`, `aksup`, `aksx`; `dev` hands them to the shell inside |
-
-## Certificate errors: a company network that re-signs HTTPS
-
-Some company networks open every HTTPS connection and sign it again with their own certificate
-(TLS inspection). Windows trusts that certificate, because IT installed it there. A container does
-not, and the Azure CLI does not even use the container's list of trusted certificates: it keeps
-one of its own. So `az account show` works (it only reads your saved login), and the first command
-that talks to Microsoft fails:
-
-```
-HTTPSConnectionPool(host='login.microsoftonline.com', port=443): Max retries exceeded with url: ...
-(Caused by SSLError(SSLCertVerificationError(1, '[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify
-failed: self-signed certificate in certificate chain')))
-Certificate verification failed. This typically happens when using Azure CLI behind a proxy that
-intercepts traffic with a self-signed certificate. Please add this certificate to the trusted CA bundle.
-```
-
-The other tools say the same in their own words: `x509: certificate signed by unknown authority`
-(`kubectl`, `terraform`, `helm`, `flux`, `gh`), `SSL certificate problem` (`curl`),
-`server certificate verification failed` (`git`) and `SSL validation failed` (`aws`).
-
-**The fix is one command, and nothing has to be rebuilt.** The toolbox asks the network which
-certificates it signs with, shows them, and trusts them once you say yes:
-
-```powershell
-Add-DevToolsCA          # PowerShell
-```
-```bash
-devtools-add-ca         # bash
-```
-
-It prints the name and the SHA-256 fingerprint of each certificate (in PowerShell it also says
-whether Windows trusts the same root), asks `(y/N)`, saves the certificates as a `.crt` file in the
-`certs` folder of this project, and then checks that HTTPS verifies. Run the command that failed
-again: from the next command on, `az`, `kubectl`, `terraform`, `helm`, `flux`, `gh`, `git`, `curl`
-and `aws` trust the company certificate. The `certs` folder is mounted into every container and read
-as the container starts, which is why there is no rebuild. (You do need the image once from the
-version that has this feature: update the project folder and run `.\setup.ps1`, `./setup.sh` or
-`docker compose build`. Only the last layers are built again.)
-
-| | PowerShell | bash |
-| --- | --- | --- |
-| Ask a different address, say the one that failed | `Add-DevToolsCA -HostName github.com` | `devtools-add-ca --host github.com` |
-| Do not ask `(y/N)` | `-Yes` | `--yes` |
-| Use a certificate file instead of asking the network | `Add-DevToolsCA -Path C:\Users\you\Downloads\company-root.cer` | `devtools-add-ca ~/Downloads/company-root.cer` |
-| Keep the certificates in another folder | `$env:DEVTOOLS_CERTS = 'C:\certs'` | `export DEVTOOLS_CERTS=~/certs` |
-
-**When the network does not send its root certificate,** the command says so. Take the root from
-Windows, where IT put it:
-
-1. Press Win+R, type `certmgr.msc` and press Enter.
-2. Open *Trusted Root Certification Authorities*, then *Certificates*, and find your company's root.
-   Its name is the one the command printed after `root CA`.
-3. Right click it, choose *All Tasks*, then *Export*, and pick *Base-64 encoded X.509 (.CER)*.
-4. Give the file to the command: `Add-DevToolsCA -Path FILE` (bash: `devtools-add-ca FILE`).
-
-You can also copy a `.crt`, `.cer` or `.pem` file into the `certs` folder yourself: PEM text or the
-binary form Windows exports, any number of files, any capital letters in the name. A file that is
-not a certificate is named in a warning and skipped; the others still count.
-
-**To look at it.** `dev devtools-ca check` says whether HTTPS to `login.microsoftonline.com`
-verifies with what the toolbox trusts now and, when it does not, shows who signed it instead.
-`dev devtools-ca check HOST:PORT` tests another address. `Get-DevToolsInfo` (bash:
-`devtools-info`) shows the certs folder and how many certificate files are in it. To undo it, delete
-the file from the `certs` folder.
-
-Worth knowing:
-
-- The trust applies inside the toolbox only. Windows, your browser and the other programs on the
-  computer are not changed.
-- Add your company's certificate and nothing else. Every certificate in `certs` is trusted for every
-  site the tools open. The files are public certificates, not secrets, but they name your employer,
-  so `.gitignore` keeps them out of git.
-- The same folder is read while the image is built: a `.crt` in it is trusted for the downloads in
-  the Dockerfile (see `certs/README.md`).
-- "certificate is not yet valid" or "has expired" is a different problem: the clock inside Docker
-  Desktop is wrong, often after the laptop slept. Restart Docker Desktop.
-- If the command cannot connect at all, Docker Desktop's proxy settings (Settings, Resources,
-  Proxies) decide, as for any container.
 
 ## Use Docker Desktop's Kubernetes (local cluster)
 
@@ -732,13 +650,6 @@ latest result). It runs three jobs:
     after `devtools-unload`. A third session plays the plain Git Bash window: a stand-in `winpty`
     rewrites path arguments the way Git for Windows' does, and docker must still get `-w /work`
     and every other argument as typed.
-  - `tests/test-ca.sh` tests the certificate helper that runs inside the container
-    (`scripts/devtools-ca.sh`) and the container's start-up (`scripts/devtools-entrypoint.sh`)
-    against local `openssl s_server` processes that play a network re-signing HTTPS: which
-    certificates are found and printed, how a server certificate for another name, a missing root
-    or a proxy in between is reported, PEM, binary and PKCS#7 files, and the bundle the start-up
-    builds from the certs folder. The wrapper tests above cover `Add-DevToolsCA` and
-    `devtools-add-ca` (the questions, the saved file, the messages), also at a real prompt.
   - The three bash test scripts run once more inside the official `bash:4.2` and `bash:4.3` images,
     the oldest bash the scripts promise to work with.
 - **On Windows**: all three PowerShell test scripts in Windows PowerShell 5.1 and in PowerShell 7 on
@@ -765,12 +676,6 @@ latest result). It runs three jobs:
     that only the `docker-desktop` context is imported (a second context's secret never reaches
     the volume), that kubectx and kubens work against it, that a re-import is idempotent, and that
     a dead corporate proxy cannot swallow the host traffic.
-  - `tests/e2e-tls-inspection.sh` plays a company network: a container of the image answers as
-    `login.microsoftonline.com` with a certificate from a made-up company CA. The real `az` stops with
-    the error from the laptop, a CA that is only in the system store does not help it, and a file in
-    the certs folder does, with no rebuild, for `az` (also its login), `curl`, `git`, `kubectl`, `helm`
-    and the AWS CLI. `devtools-ca` finds the CA, and `Add-DevToolsCA` and `devtools-add-ca` fix it
-    for real.
   - `setup.ps1` runs for real against the Docker engine of the runner (build, profile, every tool
     in its own container), and then once more to prove a second run changes nothing. So does
     `setup.sh`, followed by a new bash that loads the line it wrote: the tools are the container's,
@@ -788,7 +693,6 @@ Linux, macOS or Git Bash):
 bash tests/test-devtools-sh.sh
 bash tests/test-setup-sh.sh
 bash tests/test-uninstall-sh.sh
-bash tests/test-ca.sh                                                # needs openssl and python3
 python3 tests/pty_shell_test.py hostbash -- bash                     # Linux or macOS
 ```
 
@@ -809,14 +713,12 @@ The image tests need Linux, macOS or WSL with Docker:
 docker build -t devtools:ci .
 docker run --rm -v "$PWD/tests:/tests:ro" devtools:ci bash /tests/smoke.sh
 tests/e2e-import.sh devtools:ci                                    # needs openssl and python3
-tests/e2e-tls-inspection.sh devtools:ci                            # needs openssl, uses port 443 on the host
 python3 tests/pty_shell_test.py zsh --full -- docker run --rm -it devtools:ci zsh
 python3 tests/pty_shell_test.py bash --full -- docker run --rm -it devtools:ci bash
 python3 tests/pty_shell_test.py pwsh -- pwsh -NoLogo                 # PowerShell 7 on Linux or macOS
 ```
 
-What CI cannot prove: how your corporate proxy and TLS inspection behave (the end-to-end test
-plays one with a made-up CA; yours has its own quirks), Docker Desktop's
+What CI cannot prove: how your corporate proxy and TLS inspection behave, Docker Desktop's
 real Kubernetes (the end-to-end test uses a fake API server on Linux), and how Windows PowerShell
 5.1 behaves at a live prompt (CI has no console there, so the grey suggestions, the Tab menu and
 the Up and Down search are tested with PowerShell 7 and with stand-ins for PSReadLine 2.0). The same
@@ -829,12 +731,6 @@ Kubernetes last mile.
 ---
 
 ## Troubleshooting
-
-**`az` (or `kubectl`, `terraform` ...) fails with "self-signed certificate in certificate chain",
-`CERTIFICATE_VERIFY_FAILED`, or "x509: certificate signed by unknown authority" while it runs.**
-Your network re-signs HTTPS with a company certificate that the toolbox does not trust yet. Run
-`Add-DevToolsCA` (bash: `devtools-add-ca`), answer `y`, and try again. Details, and what to do when
-it cannot find the root certificate: [Certificate errors](#certificate-errors-a-company-network-that-re-signs-https).
 
 **Build fails with x509 / certificate errors (corporate proxy or TLS inspection).**
 Two things, usually both:
@@ -977,13 +873,12 @@ devtool/
 ├─ devtools.sh           # bash wrappers (the twin of Devtools.psm1): functions, shortcuts, Tab completion,
 │                        # history search; sourced from ~/.bashrc
 ├─ scripts/
-│  ├─ devtools-entrypoint.sh         # keeps Docker Desktop host traffic off the proxy, trusts the certificates in certs/
+│  ├─ devtools-entrypoint.sh         # keeps Docker Desktop host traffic off the proxy
 │  ├─ import-docker-desktop-kube.sh  # copies the docker-desktop kube context into the toolbox
 │  ├─ devtools-complete.sh           # answers the Tab presses of PowerShell and host bash with the real tool's completions
-│  ├─ devtools-ca.sh                 # shows what a network does to HTTPS, fetches the company CA (Add-DevToolsCA runs it)
 │  └─ shell/                         # the toolbox shell: zshrc, bashrc, aliases.sh, az-completion.sh
 ├─ tests/                # smoke test, importer end-to-end test, terminal (pty) tests, PowerShell and bash tests
 ├─ .github/workflows/    # CI: lint, build the image, run the tests above
-├─ certs/                # your company's CA certificates (optional; Add-DevToolsCA saves them here)
+├─ certs/                # drop corporate root CA here (optional)
 └─ repos/                # default mount point if REPOS_ROOT is unset
 ```

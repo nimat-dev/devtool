@@ -23,14 +23,10 @@
         Tab completion  az, kubectl, terraform, helm, flux ... the real tool in the container answers
         History         grey suggestions as you type (PSReadLine 2.1 or newer), Tab opens a menu
 
-    On a network that signs HTTPS traffic again with a company certificate (az stops with "self-signed
-    certificate in certificate chain"), Add-DevToolsCA finds that certificate and makes the toolbox trust it.
-
     Optional overrides (set before Import-Module, e.g. in $PROFILE):
         $env:DEVTOOLS_IMAGE      = 'devtools:latest'  # image tag to run
         $env:DEVTOOLS_VOLUME     = 'devtools-home'    # named creds volume
         $env:DEVTOOLS_ALIASES    = 'C:\path\my.ps1'   # your shortcuts file (default ~/.devtools-aliases.ps1)
-        $env:DEVTOOLS_CERTS      = 'C:\path\certs'    # folder with your company's CA certificates (default: certs next to this file)
         $env:DEVTOOLS_NO_READLINE = '1'               # leave the PSReadLine settings alone
         $env:AKS_RG, $env:AKS_NAME                    # your AKS cluster, for aksc / aksup / aksx
 #>
@@ -40,13 +36,6 @@ Set-StrictMode -Version Latest
 $script:DevToolsImage  = if ($env:DEVTOOLS_IMAGE)  { $env:DEVTOOLS_IMAGE }  else { 'devtools:latest' }
 $script:DevToolsVolume = if ($env:DEVTOOLS_VOLUME) { $env:DEVTOOLS_VOLUME } else { 'devtools-home' }
 $script:DevToolsAliasesFile = if ($env:DEVTOOLS_ALIASES) { $env:DEVTOOLS_ALIASES } else { Join-Path $HOME '.devtools-aliases.ps1' }
-# Your company's certificate authority: every certificate in this folder is trusted in the container.
-$script:DevToolsCertsDir   = if ($env:DEVTOOLS_CERTS)   { $env:DEVTOOLS_CERTS }   else { Join-Path $PSScriptRoot 'certs' }
-# docker takes a relative path in -v for the name of a volume, so ~ and relative paths become full ones.
-if (-not [IO.Path]::IsPathRooted($script:DevToolsCertsDir)) {
-    $script:DevToolsCertsDir = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($script:DevToolsCertsDir)
-}
-$script:DevToolsCertsMount = '/usr/local/share/devtools-ca'
 $script:DevToolsActive = $true     # false once the module is removed: the completers then go quiet
 
 # Resolve the real docker executable, never a function/alias, so wrappers can't recurse.
@@ -66,13 +55,6 @@ function Get-HostWorkdir {
     return $p
 }
 
-# The certificate files in the certs folder (*.crt, *.cer, *.pem): the ones a container trusts as it starts.
-function Get-DevToolsCertFile {
-    if (-not (Test-Path -LiteralPath $script:DevToolsCertsDir -PathType Container)) { return @() }
-    return @(Get-ChildItem -LiteralPath $script:DevToolsCertsDir -File -ErrorAction SilentlyContinue |
-        Where-Object { @('.crt', '.cer', '.pem') -contains $_.Extension.ToLowerInvariant() })
-}
-
 # Shared mount set for every invocation.
 function Get-BaseRunArgs {
     param([bool] $AllowTty)
@@ -89,10 +71,6 @@ function Get-BaseRunArgs {
 
     $a.AddRange([string[]]@('-v', "$($script:DevToolsVolume):/root"))
     $a.AddRange([string[]]@('-v', "$($cwd):/work", '-w', '/work'))
-    # Your company's certificates, when there are any: the container trusts them as it starts.
-    if (@(Get-DevToolsCertFile).Count -gt 0) {
-        $a.AddRange([string[]]@('-v', "$($script:DevToolsCertsDir):$($script:DevToolsCertsMount):ro"))
-    }
     # Comma operator: return the List intact. A bare `return $a` would be unrolled
     # by PowerShell into a fixed-size array, breaking the caller's later .Add().
     return ,$a
@@ -258,146 +236,6 @@ function Get-DevToolsInfo {
         Volume      = $script:DevToolsVolume
         Tools       = 'az, kubectl, terraform, flux, helm, kustomize, azd, gh, kubectx, kubens, dev'
         AliasesFile = $script:DevToolsAliasesFile
-        CertsFolder = $script:DevToolsCertsDir
-        CertFiles   = @(Get-DevToolsCertFile).Count
-    }
-}
-
-# Runs devtools-ca (inside the image) and returns what it printed on stdout and its exit code. What it
-# says on stderr goes straight to the screen. Extra -v mounts can be given.
-function Invoke-DevToolsCa {
-    param([string[]] $CaArgs, [string[]] $Mounts = @())
-
-    $runArgs = Get-BaseRunArgs -AllowTty $false
-    foreach ($m in $Mounts) { $runArgs.AddRange([string[]]@('-v', $m)) }
-    $runArgs.Add($script:DevToolsImage)
-    $runArgs.Add('devtools-ca')
-    $runArgs.AddRange([string[]] $CaArgs)
-
-    $lines = @(Invoke-Docker -DockerArgs ($runArgs.ToArray()) | ForEach-Object { "$_" })
-    return [pscustomobject]@{ Output = $lines; ExitCode = $LASTEXITCODE }
-}
-
-# True when Windows lists the certificate (by its SHA-1 thumbprint) as a trusted root authority.
-function Test-DevToolsWindowsRoot {
-    param([string] $Thumbprint)
-
-    if ($env:OS -ne 'Windows_NT' -or -not $Thumbprint) { return $false }
-    foreach ($store in 'Cert:\LocalMachine\Root', 'Cert:\CurrentUser\Root') {
-        if (Test-Path -LiteralPath (Join-Path $store $Thumbprint) -ErrorAction SilentlyContinue) { return $true }
-    }
-    return $false
-}
-
-# Saves PEM text (certificates, with the comment lines devtools-ca puts above each) as one file in the
-# certs folder, named after the last certificate in it: the root. Returns the path of the file.
-function Save-DevToolsCertFile {
-    param([string] $Pem)
-
-    $text = ($Pem -replace "`r", '').Trim() + "`n"
-    $name = 'proxy-ca'
-    # Without the comment lines the name comes from the text itself, so the same certificate is the same file.
-    $bytes = [Text.Encoding]::UTF8.GetBytes($text)
-    $hash  = (([Security.Cryptography.SHA256]::Create().ComputeHash($bytes) | ForEach-Object { $_.ToString('x2') }) -join '').Substring(0, 8)
-    $last = [regex]::Matches($text, '(?m)^# (?<subject>[^\n]*)\n# sha256 (?<sha>[0-9A-Fa-f:]+)\n-----BEGIN CERTIFICATE-----') | Select-Object -Last 1
-    if ($last) {
-        $hash = ($last.Groups['sha'].Value -replace ':', '').ToLowerInvariant().Substring(0, 8)
-        $cn   = [regex]::Match($last.Groups['subject'].Value, '(?i)(?:^|,)CN=(?<cn>[^,]+)')
-        if ($cn.Success) {
-            $slug = ($cn.Groups['cn'].Value.ToLowerInvariant() -replace '[^a-z0-9]+', '-').Trim('-')
-            if ($slug.Length -gt 40) { $slug = $slug.Substring(0, 40).Trim('-') }
-            if ($slug) { $name = $slug }
-        }
-    }
-    New-Item -ItemType Directory -Force -Path $script:DevToolsCertsDir | Out-Null
-    $file = Join-Path $script:DevToolsCertsDir ("$name-$hash.crt")
-    [IO.File]::WriteAllText($file, $text, [Text.UTF8Encoding]::new($false))
-    return $file
-}
-
-# Makes the toolbox trust your company's certificate authority.
-#
-# Some company networks open every HTTPS connection and sign it again with their own certificate.
-# Windows trusts that authority (IT installed it), but the toolbox does not, and az stops with
-# "self-signed certificate in certificate chain". With no arguments this looks at what the network
-# presents for login.microsoftonline.com, shows the certificates behind it (and whether Windows trusts
-# them too), and after you agree saves them in the certs folder. The next command you run trusts
-# them; the image does not have to be rebuilt.
-#
-#   Add-DevToolsCA                       find it, show it, ask
-#   Add-DevToolsCA -Yes                  the same, without asking
-#   Add-DevToolsCA -Path corp-root.cer   add a certificate file you already have (PEM, DER or .p7b)
-#   Add-DevToolsCA -HostName example.com another host to look at
-function Add-DevToolsCA {
-    [CmdletBinding()]
-    param(
-        [string[]] $Path,
-        [string]   $HostName = 'login.microsoftonline.com',
-        [switch]   $Yes
-    )
-
-    $rebuild = 'This image has no devtools-ca yet. Rebuild it first:  docker compose build'
-    $pem = ''
-
-    if ($Path) {
-        $parts = [System.Collections.Generic.List[string]]::new()
-        foreach ($p in $Path) {
-            if (-not (Test-Path -LiteralPath $p -PathType Leaf)) { Write-Error "There is no file $p"; return }
-            $full = (Resolve-Path -LiteralPath $p).ProviderPath
-            # The container checks that it is a certificate and hands it back as PEM.
-            $r = Invoke-DevToolsCa -CaArgs @('normalize', '/devtools-ca-in/cert') -Mounts @("$($full):/devtools-ca-in/cert:ro")
-            if ($r.ExitCode -eq 127) { Write-Warning $rebuild; return }
-            if ($r.ExitCode -ne 0) { return }          # devtools-ca has said what is wrong with the file
-            $parts.Add(($r.Output -join "`n"))
-        }
-        $pem = $parts -join "`n"
-    } else {
-        $r = Invoke-DevToolsCa -CaArgs @('fetch', $HostName)
-        switch ($r.ExitCode) {
-            0   { $pem = $r.Output -join "`n" }
-            10  { Write-Host "Nothing to add: HTTPS to $HostName already works in the toolbox."; return }
-            11  { Write-Warning "The network does not send its root CA. Get that certificate from IT, or export it from Windows (README), then:  Add-DevToolsCA -Path <file>"; return }
-            127 { Write-Warning $rebuild; return }
-            default { Write-Warning "Could not find the certificate (devtools-ca exited with $($r.ExitCode)); what it said is above."; return }
-        }
-
-        # The certificates are the ones the network presents. Windows has been told to trust the root by IT.
-        $blocks = @([regex]::Matches($pem, '-----BEGIN CERTIFICATE-----[A-Za-z0-9+/=\r\n ]+?-----END CERTIFICATE-----') | ForEach-Object { $_.Value })
-        $root = $null
-        if ($blocks.Count -gt 0) {
-            try {
-                $der  = [Convert]::FromBase64String(($blocks[$blocks.Count - 1] -replace '-----(BEGIN|END) CERTIFICATE-----|\s', ''))
-                $root = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($der)
-            } catch {
-                $root = $null
-            }
-        }
-        if ($root -and (Test-DevToolsWindowsRoot -Thumbprint $root.Thumbprint)) {
-            Write-Host "Windows trusts the root CA too (it is in Trusted Root Certification Authorities), so this is your company's." -ForegroundColor Green
-        } elseif ($root -and $env:OS -eq 'Windows_NT') {
-            Write-Host "Windows does NOT list this root CA as trusted. Go on only if IT confirmed that it is your company's." -ForegroundColor Yellow
-        }
-
-        if (-not $Yes) {
-            if ([Console]::IsInputRedirected) {
-                Write-Error 'This asks you to confirm, and there is nobody to ask here. Run it again with -Yes if you agree.'
-                return
-            }
-            $count  = $blocks.Count
-            $answer = Read-Host "Trust $count certificate(s) like this inside the toolbox? (y/N)"
-            if ($answer -notmatch '^\s*y(es)?\s*$') { Write-Host 'Nothing was changed.'; return }
-        }
-    }
-
-    $file = Save-DevToolsCertFile -Pem $pem
-    Write-Host "Saved $file"
-
-    $c = Invoke-DevToolsCa -CaArgs @('check', $HostName)
-    foreach ($line in $c.Output) { Write-Host $line }
-    if ($c.ExitCode -eq 0) {
-        Write-Host 'az, kubectl, terraform and the rest trust it from the next command on. Nothing has to be rebuilt.' -ForegroundColor Green
-    } else {
-        Write-Warning "HTTPS to $HostName still does not verify. Remove $file if it was the wrong certificate."
     }
 }
 
@@ -773,7 +611,7 @@ $ExecutionContext.SessionState.Module.OnRemove = {
 }
 
 $exportFunctions = @('az', 'kubectl', 'terraform', 'flux', 'helm', 'kustomize', 'azd', 'gh', 'kubectx', 'kubens',
-                     'dev', 'Import-DockerDesktopKube', 'Get-DevToolsInfo', 'Add-DevToolsCA', 'Get-DevToolsAlias', 'aksc', 'aksup', 'aksx') +
+                     'dev', 'Import-DockerDesktopKube', 'Get-DevToolsInfo', 'Get-DevToolsAlias', 'aksc', 'aksup', 'aksx') +
                    @($script:DevToolsAliases.Keys) + @($script:DevToolsPersonalFunctions)
 $exportFunctions = @($exportFunctions | Where-Object { Test-Path -LiteralPath ('Function:\' + $_) })
 if (@($script:DevToolsPersonalAliases).Count -gt 0) {

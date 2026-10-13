@@ -23,7 +23,6 @@ HOME_DIR=$TMP/home
 WORK="$TMP/work dir"                 # a space on purpose
 mkdir -p "$HOME_DIR" "$WORK"
 export DOCKER_ARGS_FILE=$TMP/args.txt
-export DEVTOOLS_CERTS=$TMP/certs      # not the certs/ folder of this checkout: it would be mounted in every call
 export DEVTOOLS_SH=$TEST_ROOT/devtools.sh
 export TEST_ROOT
 unset DEVTOOLS_IMAGE DEVTOOLS_VOLUME DEVTOOLS_BASH_ALIASES DEVTOOLS_WINPTY DEVTOOLS_NO_READLINE \
@@ -256,200 +255,6 @@ check_eq 'a context and a kubeconfig can be given' "$(last_args)" \
 DOCKER_FORCE_EXIT=127 dt 'devtools-import-kube; echo rc=$?'
 check_has 'an image without the importer says to rebuild' "$OUT" 'docker compose build'
 check_has 'and returns 127' "$OUT" 'rc=127'
-
-# ---- Your company's certificates ---------------------------------------------------------------------
-# On a network that signs HTTPS again with a company certificate, az needs that certificate. Every
-# tool gets the certs folder, and devtools-add-ca puts a certificate in it. DEVTOOLS_CERTS (set at
-# the top) keeps a certs/ folder of your own out of these tests.
-CERTS=$TMP/certs
-CERT_MOUNT="$CERTS:/usr/local/share/devtools-ca:ro"
-FIXTURE=$TEST_ROOT/tests/fixtures/ca-fetch.pem
-FETCH_PEM=$(to_native "$FIXTURE")
-CA_LOG=$TMP/ca-docker.log
-SAVED=$CERTS/example-corp-root-ca-95e7cda0.crt
-ca_reset() {
-  rm -rf "$CERTS" "$TMP/in dir"
-  : > "$CA_LOG"
-}
-ca_calls() { tr -d '\r' < "$CA_LOG"; }
-ca_call() { ca_calls | sed -n "${1}p"; }
-ca_count() { ca_calls | wc -l | tr -d ' '; }
-ca_reset
-
-dt 'az x'
-check_eq 'no certs folder: nothing about certificates is mounted' "$(last_args)" "$BASE|az|x"
-mkdir -p "$CERTS/folder.crt"
-printf 'notes\n' > "$CERTS/README.md"
-printf 'notes\n' > "$CERTS/notes.txt"
-dt 'az x'
-check_eq 'a certs folder with no certificate files in it: nothing is mounted' "$(last_args)" "$BASE|az|x"
-printf 'x\n' > "$CERTS/company.crt"
-dt 'az x'
-check_eq 'a certificate in the certs folder is mounted read-only, after the working folder' "$(last_args)" \
-  "run|--rm|-i|-v|devtools-home:/root|-v|$WORK_NATIVE:/work|-w|/work|-v|$CERT_MOUNT|devtools:latest|az|x"
-dt 'dev'
-check_eq 'dev gets it too' "$(last_args)" "run|--rm|-i|-v|devtools-home:/root|-v|$WORK_NATIVE:/work|-w|/work|-v|$CERT_MOUNT|devtools:latest"
-rm "$CERTS/company.crt"
-for name in COMPANY.CER company.pem Root.Pem; do
-  printf 'x\n' > "$CERTS/$name"
-  dt 'az x'
-  check_has "$name counts as a certificate file" "$(last_args)" "|-v|$CERT_MOUNT|"
-  rm "$CERTS/$name"
-done
-printf 'x\n' > "$CERTS/a.crt"
-printf 'x\n' > "$CERTS/b.cer"
-dt 'devtools-info'
-check_has 'devtools-info shows the certs folder' "$OUT" "CertsFolder  $CERTS"
-check_has 'and how many certificate files are in it' "$OUT" 'CertFiles    2'
-DEVTOOLS_CERTS='' dt 'devtools-info'
-check_has 'the certs folder defaults to certs next to devtools.sh' "$OUT" "CertsFolder  $(cd "$TEST_ROOT" && pwd)/certs"
-# docker takes a relative path in -v for the name of a volume, so DEVTOOLS_CERTS is made a full path.
-mkdir -p "$WORK/rel-certs" "$HOME_DIR/home-certs"
-printf 'x\n' > "$WORK/rel-certs/c.crt"
-printf 'x\n' > "$HOME_DIR/home-certs/c.crt"
-DEVTOOLS_CERTS=rel-certs dt 'az x'
-check_eq 'a relative DEVTOOLS_CERTS is taken from the current folder and mounted as a full path' "$(last_args)" \
-  "run|--rm|-i|-v|devtools-home:/root|-v|$WORK_NATIVE:/work|-w|/work|-v|$WORK_NATIVE/rel-certs:/usr/local/share/devtools-ca:ro|devtools:latest|az|x"
-# shellcheck disable=SC2088  # on purpose: the variable holds a ~ that nobody expanded
-DEVTOOLS_CERTS='~/home-certs' dt 'devtools-info'
-check_has 'a DEVTOOLS_CERTS that starts with ~/ means the home folder' "$OUT" "CertsFolder  $HOME_DIR/home-certs"
-DEVTOOLS_CERTS="$CERTS" dt 'devtools-info'
-check_has 'a full path stays as it is' "$OUT" "CertsFolder  $CERTS"
-rm -rf "$WORK/rel-certs" "$HOME_DIR/home-certs"
-
-# devtools-add-ca: the network is asked, the certificates are saved, the result is checked.
-ca_reset
-DOCKER_LOG_FILE=$CA_LOG DOCKER_CA_FETCH_FILE=$FETCH_PEM dt 'devtools-add-ca --yes; echo "rc=$?"'
-check_has 'devtools-add-ca --yes succeeds' "$OUT" 'rc=0'
-check_has 'it says where it saved the certificates' "$OUT" "Saved $SAVED"
-check_has 'it shows the check it ran afterwards' "$OUT" 'ok: fake check'
-check_has 'and says nothing has to be rebuilt' "$OUT" 'Nothing has to be rebuilt'
-check_eq 'it made two docker calls' "$(ca_count)" 2
-check_has 'the first looks at the network' "$(ca_call 1)" ' devtools:latest devtools-ca fetch login.microsoftonline.com'
-check_has 'the second checks the result' "$(ca_call 2)" ' devtools:latest devtools-ca check login.microsoftonline.com'
-check_lacks 'the first has no certificate to mount yet' "$(ca_call 1)" 'devtools-ca:ro'
-check_has 'the second already trusts what was saved' "$(ca_call 2)" " -v $CERT_MOUNT "
-check_lacks 'neither asks docker for a terminal' "$(ca_calls)" ' -t '
-check_same 'the file holds what devtools-ca printed' "$SAVED" "$FIXTURE"
-DOCKER_LOG_FILE=$CA_LOG DOCKER_CA_FETCH_FILE=$FETCH_PEM dt 'devtools-add-ca -y > /dev/null 2>&1; ls "'"$CERTS"'"'
-check_eq 'running it again replaces that file' "$OUT" 'example-corp-root-ca-95e7cda0.crt'
-
-ca_reset
-DOCKER_LOG_FILE=$CA_LOG DOCKER_CA_FETCH_FILE=$FETCH_PEM dt 'devtools-add-ca --host example.org --yes'
-check_has 'another host is looked at' "$(ca_call 1)" ' devtools-ca fetch example.org'
-check_has 'and checked' "$(ca_call 2)" ' devtools-ca check example.org'
-
-ca_reset
-DOCKER_LOG_FILE=$CA_LOG DOCKER_CA_FETCH_EXIT=10 dt 'devtools-add-ca --yes; echo "rc=$?"'
-check_has 'a network that is fine: nothing to add' "$OUT" 'Nothing to add: HTTPS to login.microsoftonline.com already works in the toolbox.'
-check_has 'and that is a success' "$OUT" 'rc=0'
-check_no 'nothing is saved' test -e "$CERTS"
-check_eq 'and no check is run' "$(ca_count)" 1
-
-ca_reset
-DOCKER_CA_FETCH_EXIT=11 dt 'devtools-add-ca --yes; echo "rc=$?"'
-check_has 'a network that does not send its root CA: says so' "$OUT" 'does not send its root CA'
-check_has 'and what to do instead' "$OUT" 'devtools-add-ca FILE'
-check_has 'and fails' "$OUT" 'rc=1'
-check_no 'nothing is saved' test -e "$CERTS"
-DOCKER_CA_FETCH_EXIT=127 dt 'devtools-add-ca --yes; echo "rc=$?"'
-check_has 'an image without devtools-ca: says to rebuild' "$OUT" 'This image has no devtools-ca yet. Rebuild it first:  docker compose build'
-check_has 'and fails (127)' "$OUT" 'rc=1'
-DOCKER_CA_FETCH_EXIT=2 dt 'devtools-add-ca --yes; echo "rc=$?"'
-check_has 'no connection: says what happened' "$OUT" 'Could not find the certificate (devtools-ca exited with 2)'
-check_has 'and fails (2)' "$OUT" 'rc=1'
-check_no 'nothing is saved after any of those' test -e "$CERTS"
-
-DOCKER_CA_FETCH_FILE=$FETCH_PEM DOCKER_CA_CHECK_EXIT=1 dt 'devtools-add-ca --yes; echo "rc=$?"'
-check_has 'a certificate that does not help: shows the check' "$OUT" 'FAILED: fake check'
-check_has 'and says which file to remove' "$OUT" "still does not verify. Remove $SAVED if it was the wrong certificate."
-check_has 'and fails (check)' "$OUT" 'rc=1'
-check_ok 'the file stays until you remove it' test -f "$SAVED"
-
-ca_reset
-DOCKER_LOG_FILE=$CA_LOG DOCKER_CA_FETCH_FILE=$FETCH_PEM dt 'devtools-add-ca; echo "rc=$?"' < /dev/null
-check_has 'without --yes and nobody to ask: says so' "$OUT" 'nobody to ask here'
-check_has 'and fails (nobody to ask)' "$OUT" 'rc=1'
-check_no 'nothing is saved (nobody to ask)' test -e "$CERTS"
-check_eq 'and the check is not run' "$(ca_count)" 1
-
-# A certificate file you already have.
-ca_reset
-mkdir -p "$TMP/in dir"
-printf 'binary\n' > "$TMP/in dir/corp root.cer"
-printf 'binary again\n' > "$TMP/in dir/second.cer"
-DOCKER_LOG_FILE=$CA_LOG DOCKER_CA_NORMALIZE_FILE=$FETCH_PEM dt "devtools-add-ca '$TMP/in dir/corp root.cer' < /dev/null; echo \"rc=\$?\""
-check_has 'a file: succeeds, and nobody is asked' "$OUT" 'rc=0'
-check_has 'a file: is saved like the fetched ones' "$OUT" "Saved $SAVED"
-check_eq 'a file: two docker calls' "$(ca_count)" 2
-check_has 'the file is mounted read-only for the container' "$(ca_call 1)" " -v $TMP/in dir/corp root.cer:/devtools-ca-in/cert:ro "
-check_has 'which turns it into PEM' "$(ca_call 1)" ' devtools:latest devtools-ca normalize /devtools-ca-in/cert'
-check_has 'then the result is checked' "$(ca_call 2)" ' devtools-ca check login.microsoftonline.com'
-check_same 'the saved file is what the container printed' "$SAVED" "$FIXTURE"
-
-ca_reset
-mkdir -p "$TMP/in dir"
-printf 'binary\n' > "$TMP/in dir/corp root.cer"
-printf 'binary again\n' > "$TMP/in dir/second.cer"
-DOCKER_LOG_FILE=$CA_LOG DOCKER_CA_NORMALIZE_FILE=$FETCH_PEM dt "devtools-add-ca '$TMP/in dir/corp root.cer' '$TMP/in dir/second.cer'; echo \"rc=\$?\""
-check_has 'two files: succeeds' "$OUT" 'rc=0'
-check_eq 'two files: each is normalized, then the result is checked' "$(ca_count)" 3
-check_has 'the second file is mounted too' "$(ca_call 2)" " -v $TMP/in dir/second.cer:/devtools-ca-in/cert:ro "
-check_eq 'both go into one file' "$(grep -c -e '-----BEGIN CERTIFICATE-----' "$SAVED")" 4
-check_eq 'and the file ends after its last certificate' "$(tail -n 1 "$SAVED")" '-----END CERTIFICATE-----'
-
-ca_reset
-DOCKER_LOG_FILE=$CA_LOG dt "devtools-add-ca '$TMP/no such file.cer'; echo \"rc=\$?\""
-check_has 'a file that is not there: says so' "$OUT" "There is no file $TMP/no such file.cer"
-check_has 'and fails (no file)' "$OUT" 'rc=1'
-check_eq 'and docker is not called' "$(ca_count)" 0
-mkdir -p "$TMP/in dir"
-printf 'junk\n' > "$TMP/in dir/junk.cer"
-DOCKER_LOG_FILE=$CA_LOG DOCKER_CA_NORMALIZE_EXIT=1 dt "devtools-add-ca '$TMP/in dir/junk.cer'; echo \"rc=\$?\""
-check_has 'a file that is not a certificate fails' "$OUT" 'rc=1'
-check_no 'and nothing is saved (not a certificate)' test -e "$CERTS"
-check_eq 'and no check is run (not a certificate)' "$(ca_count)" 1
-DOCKER_CA_NORMALIZE_EXIT=127 dt "devtools-add-ca '$TMP/in dir/junk.cer'; echo \"rc=\$?\""
-check_has 'a file with an image that has no devtools-ca: says to rebuild' "$OUT" 'docker compose build'
-
-# The file name comes from the root CA: its common name and the start of its fingerprint.
-NAMES=$TMP/names
-mkdir -p "$NAMES"
-awk '/-----BEGIN CERTIFICATE-----/ { n++ } n == 2' "$FIXTURE" > "$NAMES/root-block.pem"
-pem_named() { { printf '%s\n' "$1" "$2"; cat "$NAMES/root-block.pem"; } > "$NAMES/fetch.pem"; }
-saved_name() { # SUBJECT-LINE SHA-LINE  ->  the name of the file devtools-add-ca makes
-  ca_reset
-  pem_named "$1" "$2"
-  DOCKER_CA_FETCH_FILE=$NAMES/fetch.pem dt 'devtools-add-ca --yes > /dev/null 2>&1; ls "'"$CERTS"'"'
-}
-saved_name '# CN=ACME  Corp: Root CA (2020),O=Acme,C=US' '# sha256 AB:CD:EF:01:23:45:67:89'
-check_eq 'a common name with odd characters becomes a plain file name' "$OUT" 'acme-corp-root-ca-2020-abcdef01.crt'
-saved_name '# CN=A very very long common name for a certificate authority that goes on and on,O=Acme' '# sha256 11:22:33:44:55:66:77:88'
-check_eq 'a long common name is cut' "$OUT" 'a-very-very-long-common-name-for-a-certi-11223344.crt'
-saved_name '# O=Acme,C=US' '# sha256 99:88:77:66:55:44:33:22'
-check_eq 'a certificate without a common name is called proxy-ca' "$OUT" 'proxy-ca-99887766.crt'
-ca_reset
-cp "$NAMES/root-block.pem" "$NAMES/fetch.pem"
-DOCKER_CA_FETCH_FILE=$NAMES/fetch.pem dt 'devtools-add-ca --yes > /dev/null 2>&1; ls "'"$CERTS"'"'
-first=$OUT
-DOCKER_CA_FETCH_FILE=$NAMES/fetch.pem dt 'devtools-add-ca --yes > /dev/null 2>&1; ls "'"$CERTS"'"'
-check_eq 'without the comment lines the name still depends only on the certificate' "$OUT" "$first"
-case $first in proxy-ca-*.crt) check_pass 'and starts with proxy-ca' ;; *) check_fail 'and starts with proxy-ca' "$first" ;; esac
-
-dt 'devtools-add-ca --bogus; echo "rc=$?"'
-check_has 'an unknown option is an error' "$OUT" 'devtools-add-ca: unknown option --bogus'
-check_has 'and returns 2' "$OUT" 'rc=2'
-dt 'devtools-add-ca --host; echo "rc=$?"'
-check_has '--host without a name is an error' "$OUT" '--host needs a host name'
-check_has 'and returns 2 (--host)' "$OUT" 'rc=2'
-dt 'devtools-add-ca --help; echo "rc=$?"'
-check_has '--help prints the usage' "$OUT" 'usage: devtools-add-ca [--yes] [--host HOST] [FILE...]'
-check_has 'and returns 0' "$OUT" 'rc=0'
-PATH="$TMP_POSIX/empty" dt 'devtools-add-ca --yes; echo "rc=$?"'
-check_has 'without docker it says docker is missing' "$OUT" 'docker was not found on PATH'
-check_has 'and returns 127' "$OUT" 'rc=127'
-check_lacks 'and does not tell you to rebuild' "$OUT" 'Rebuild it first'
-ca_reset
 
 # ---- Tab completion --------------------------------------------------------------------------------
 # _devtools_complete is called the way bash calls a completion function; the fake docker plays the container.
@@ -715,7 +520,7 @@ EOF
 fi
 
 # ---- Taking it out again -----------------------------------------------------------------------------
-dt 'unset DEVTOOLS_SH DEVTOOLS_CERTS; devtools-unload; echo "type: $(type -t az || echo none)"; echo "aliases: $(alias | wc -l | tr -d " ")"; echo "specs: $(complete -p | grep -c -i devtools)"; echo "funcs: $(compgen -A function | grep -c -i devtools)"; echo "vars: $(compgen -v | grep -c -i devtools)"; echo "aks: $(type -t aksc || echo none)"'
+dt 'unset DEVTOOLS_SH; devtools-unload; echo "type: $(type -t az || echo none)"; echo "aliases: $(alias | wc -l | tr -d " ")"; echo "specs: $(complete -p | grep -c -i devtools)"; echo "funcs: $(compgen -A function | grep -c -i devtools)"; echo "vars: $(compgen -v | grep -c -i devtools)"; echo "aks: $(type -t aksc || echo none)"'
 check_lacks 'devtools-unload removes the tool functions' "$OUT" 'type: function'
 check_has 'and the shortcuts' "$OUT" 'aliases: 0'
 check_has 'and the helper functions of the shortcuts' "$OUT" 'aks: none'
