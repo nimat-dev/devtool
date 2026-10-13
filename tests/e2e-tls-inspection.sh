@@ -111,7 +111,7 @@ run_split() {
   OUT=${OUT//$'\r'/}
   ERR=$(tr -d '\r' < "$WORK/stderr.txt")
 }
-last_lines() { printf '%s\n' "$OUT" | tail -n 14 | cut -c1-240; }
+last_lines() { printf '%s\n' "$OUT" | tail -n 8 | cut -c1-240; }
 section() { printf '%s\n' "$OUT" | awk -v n="@@$1" '$0 == n { on = 1; next } /^@@/ { on = 0 } on'; }
 
 # The last run failed because it does not trust the certificate.
