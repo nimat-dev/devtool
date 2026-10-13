@@ -485,8 +485,8 @@ intercepts traffic with a self-signed certificate. Please add this certificate t
 ```
 
 The other tools say the same in their own words: `x509: certificate signed by unknown authority`
-(`kubectl`, `terraform`, `helm`, `flux`, `gh`), `SSL certificate problem` (`git`, `curl`) and
-`SSL validation failed` (`aws`).
+(`kubectl`, `terraform`, `helm`, `flux`, `gh`), `SSL certificate problem` (`curl`),
+`server certificate verification failed` (`git`) and `SSL validation failed` (`aws`).
 
 **The fix is one command, and nothing has to be rebuilt.** The toolbox asks the network which
 certificates it signs with, shows them, and trusts them once you say yes:

@@ -90,7 +90,8 @@ if ! docker logs "$NAME" 2>&1 | grep -q '^ACCEPT'; then
 fi
 
 # ---- helpers -------------------------------------------------------------------------------------
-TLS_ERR='CERTIFICATE_VERIFY_FAILED|SSL certificate problem|certificate signed by unknown authority|SSL validation failed|self-signed certificate|self signed certificate|failed to verify certificate'
+# What the tools say when they do not trust the certificate (git is built on GnuTLS in Debian, hence its own words).
+TLS_ERR='CERTIFICATE_VERIFY_FAILED|SSL certificate problem|certificate signed by unknown authority|SSL validation failed|self-signed certificate|self signed certificate|failed to verify certificate|server certificate verification failed'
 AZ_GET=(az rest --skip-authorization-header --method get --url https://login.microsoftonline.com/ok.json)
 
 # A container on "the company network": the name az needs leads to the interceptor.
