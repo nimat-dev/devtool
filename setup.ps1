@@ -11,9 +11,7 @@
     1  checks that Docker Desktop is running with Linux containers
     2  creates .env from .env.example (kept if it already exists)
     3  builds the image                       (docker compose build)
-    4  adds the Import-Module line to your PowerShell profile: on Windows to the profiles of both
-       Windows PowerShell 5.1 and PowerShell 7 (when installed), because the VS Code terminal often
-       opens the other one than the Start menu does
+    4  adds the Import-Module line to your PowerShell profile
     5  loads the wrappers in this window      (az, kubectl, terraform, ... run in the container),
        with the shortcuts (k, kgp, tfp, azl ...), Tab completion and history suggestions;
        creates ~/.devtools-aliases.ps1 for your own shortcuts (never overwritten)
@@ -30,7 +28,7 @@
 .PARAMETER ImportKube   Import Docker Desktop's Kubernetes context at the end without asking.
 .PARAMETER NoPrompt     Never ask a question (for automation). The two optional steps then run
                         only when -Login / -ImportKube are given.
-.PARAMETER ProfilePath  Profile file to edit instead of the all-hosts profiles (only that one file is touched).
+.PARAMETER ProfilePath  Profile file to edit instead of your all-hosts profile.
 #>
 [CmdletBinding()]
 param(
@@ -131,71 +129,6 @@ function Get-ReadLineAdvice {
         return [pscustomobject]@{ Kind = 'suggestions'; Text = "history suggestions as you type, the Right arrow accepts (PSReadLine $Version)" }
     }
     return [pscustomobject]@{ Kind = 'search'; Text = "history: type the start of a command, then Up or Down arrow finds it (PSReadLine $Version cannot show grey suggestions)" }
-}
-
-# True when PowerShell 7 is installed on this Windows machine. It keeps its profile in a folder of its own,
-# next to the one of Windows PowerShell 5.1, so a line in one of them is not seen by the other.
-function Test-PowerShell7Installed {
-    if (Get-Command -Name 'pwsh.exe' -CommandType Application -ErrorAction SilentlyContinue) { return $true }
-    $places = @()
-    if ($env:ProgramFiles) { $places += (Join-Path $env:ProgramFiles 'PowerShell\7\pwsh.exe') }
-    if ($env:LOCALAPPDATA) { $places += (Join-Path $env:LOCALAPPDATA 'Programs\PowerShell\7\pwsh.exe') }
-    $docs = [Environment]::GetFolderPath('MyDocuments')
-    if ($docs) { $places += (Join-Path $docs 'PowerShell') }      # it has been used by this user
-    foreach ($p in $places) {
-        if (Test-Path -LiteralPath $p) { return $true }
-    }
-    return $false
-}
-
-# The profile files that get the Import-Module line. Windows PowerShell 5.1 (Documents\WindowsPowerShell)
-# and PowerShell 7 (Documents\PowerShell) have separate profiles, and a terminal that is not yours often
-# opens the other one: VS Code starts PowerShell 7 whenever it is installed, while the shortcut in the Start
-# menu starts 5.1. So on Windows the line goes into the all-hosts profile of this PowerShell first and of
-# the other one after it ($HasPowerShell7 says whether 5.1 has a neighbour; 7 always has 5.1). The all-hosts
-# profile is read by every host: the console, the VS Code terminal, Windows Terminal, the ISE.
-function Get-ProfileTargets {
-    param([string] $AllHosts, [bool] $OnWindows, [bool] $HasPowerShell7)
-
-    $list = New-Object System.Collections.Generic.List[string]
-    $list.Add($AllHosts)
-    if ($OnWindows) {
-        $dir    = Split-Path -Parent $AllHosts
-        $up     = Split-Path -Parent $dir
-        $leaf   = Split-Path -Leaf $AllHosts
-        $folder = Split-Path -Leaf $dir
-        if ($folder -eq 'WindowsPowerShell') {
-            if ($HasPowerShell7) { $list.Add((Join-Path (Join-Path $up 'PowerShell') $leaf)) }
-        } elseif ($folder -eq 'PowerShell') {
-            $list.Add((Join-Path (Join-Path $up 'WindowsPowerShell') $leaf))
-        }
-    }
-    return $list.ToArray()
-}
-
-# Put the Import-Module line into one profile file; a line that points at another folder is replaced.
-# Throws when the file cannot be written.
-function Install-ProfileLine {
-    param([string] $Target)
-
-    # Read it the way PowerShell itself would, so non-ASCII text in an existing profile survives.
-    $text = if (Test-Path -LiteralPath $Target) { "$(Get-Content -LiteralPath $Target -Raw)" } else { '' }
-    # (?i): a line typed by hand as "import-module ... devtools.psm1" counts too. (?=\r?$): works for CRLF files.
-    $rx   = '(?mi)^[ \t]*(?:Import-Module|ipmo)\b[^\r\n]*Devtools\.psm1[^\r\n]*(?=\r?$)'
-
-    if (@($text -split "`r?`n" | ForEach-Object { $_.Trim() }) -contains $importLine) {
-        Write-Ok "already set up in $Target"
-    } elseif ($text -match $rx) {
-        # An older line points at another folder (the project was moved or re-extracted).
-        Copy-Item -LiteralPath $Target -Destination "$Target.bak" -Force
-        $updated = [regex]::Replace($text, $rx, [System.Text.RegularExpressions.MatchEvaluator]{ param($m) $importLine })
-        [IO.File]::WriteAllText($Target, $updated, (New-Object System.Text.UTF8Encoding $true))
-        Write-Ok "updated the existing Import-Module line in $Target (backup: $Target.bak)"
-    } else {
-        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $Target) | Out-Null
-        Add-Content -LiteralPath $Target -Encoding UTF8 -Value ("`r`n# DevOps toolbox: az, kubectl, terraform, helm, flux ... run in Docker`r`n" + $importLine)
-        Write-Ok "added the Import-Module line to $Target"
-    }
 }
 
 # The file for your own shortcuts. Created once, never overwritten. It has a byte-order mark so that
@@ -302,42 +235,37 @@ Write-Step '4/6  PowerShell profile'
 if ($SkipProfile) {
     Write-Info 'skipped (-SkipProfile)'
 } else {
-    # -ProfilePath names one file. Otherwise on Windows both PowerShells get the line (see Get-ProfileTargets).
-    $targets = @()
+    $target = ''
     try {
-        if ($ProfilePath) {
-            $targets = @($ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($ProfilePath))
+        $target = if ($ProfilePath) {
+            $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($ProfilePath)
         } else {
-            $targets = @(Get-ProfileTargets -AllHosts $PROFILE.CurrentUserAllHosts -OnWindows $isWin -HasPowerShell7 ($isWin -and (Test-PowerShell7Installed)))
+            $PROFILE.CurrentUserAllHosts
+        }
+        # Read it the way PowerShell itself would, so non-ASCII text in an existing profile survives.
+        $text = if (Test-Path -LiteralPath $target) { "$(Get-Content -LiteralPath $target -Raw)" } else { '' }
+        # (?i): a line typed by hand as "import-module ... devtools.psm1" counts too. (?=\r?$): works for CRLF files.
+        $rx   = '(?mi)^[ \t]*(?:Import-Module|ipmo)\b[^\r\n]*Devtools\.psm1[^\r\n]*(?=\r?$)'
+
+        if (@($text -split "`r?`n" | ForEach-Object { $_.Trim() }) -contains $importLine) {
+            Write-Ok "already set up in $target"
+        } elseif ($text -match $rx) {
+            # An older line points at another folder (the project was moved or re-extracted).
+            Copy-Item -LiteralPath $target -Destination "$target.bak" -Force
+            $updated = [regex]::Replace($text, $rx, [System.Text.RegularExpressions.MatchEvaluator]{ param($m) $importLine })
+            [IO.File]::WriteAllText($target, $updated, (New-Object System.Text.UTF8Encoding $true))
+            Write-Ok "updated the existing Import-Module line in $target (backup: $target.bak)"
+        } else {
+            New-Item -ItemType Directory -Force -Path (Split-Path -Parent $target) | Out-Null
+            Add-Content -LiteralPath $target -Encoding UTF8 -Value ("`r`n# DevOps toolbox: az, kubectl, terraform, helm, flux ... run in Docker`r`n" + $importLine)
+            Write-Ok "added the Import-Module line to $target"
         }
     } catch {
-        Write-Fail "Could not work out where your PowerShell profile is: $($_.Exception.Message)"
+        # Locked-down machines: a read-only or redirected Documents folder, Controlled Folder Access ...
+        Write-Fail "Could not update your profile ($target): $($_.Exception.Message)"
         Write-Info 'Add this line to it yourself, or run it in each PowerShell window you want the tools in:'
         Write-Info "    $importLine"
         $problems++
-    }
-    $wired = 0
-    for ($i = 0; $i -lt $targets.Count; $i++) {
-        $target = $targets[$i]
-        try {
-            Install-ProfileLine $target
-            $wired++
-        } catch {
-            if ($i -eq 0) {
-                # Locked-down machines: a read-only or redirected Documents folder, Controlled Folder Access ...
-                Write-Fail "Could not update your profile ($target): $($_.Exception.Message)"
-                Write-Info 'Add this line to it yourself, or run it in each PowerShell window you want the tools in:'
-                Write-Info "    $importLine"
-                $problems++
-            } else {
-                Write-Warn "Could not update the profile of the other PowerShell ($target): $($_.Exception.Message)"
-                Write-Info 'Add the same line there yourself if you use that PowerShell too.'
-            }
-        }
-    }
-    if ($wired -gt 1) {
-        Write-Info 'Windows PowerShell 5.1 and PowerShell 7 each have their own profile, so both were set up.'
-        Write-Info 'That way VS Code and Windows Terminal have the tools whichever one they open.'
     }
     if ($isWin -and ((Get-FutureExecutionPolicy) -in 'Restricted', 'AllSigned')) {
         Write-Warn "PowerShell's execution policy is $(Get-FutureExecutionPolicy), so NEW windows will not load the profile."
