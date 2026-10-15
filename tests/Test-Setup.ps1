@@ -141,6 +141,40 @@ Check 'a two-part version such as 3.0 is understood'                          ((
 Check 'no PSReadLine at all is reported as missing'                           ((Get-ReadLineAdvice $null).Kind -eq 'missing')
 Check 'the text names the version'                                            ((Get-ReadLineAdvice ([version] '2.0.0')).Text -match '2\.0\.0')
 
+# Which profile files get the line is also a small function in setup.ps1. Windows PowerShell 5.1 and
+# PowerShell 7 keep their profiles in sibling folders, and VS Code opens the other one than the Start menu does.
+$targetsFn = $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Get-ProfileTargets' }, $true) | Select-Object -First 1
+Check 'setup.ps1 has Get-ProfileTargets' ($null -ne $targetsFn)
+. ([scriptblock]::Create($targetsFn.Extent.Text))
+$docs     = Join-Path $base 'Documents'
+$oneDrive = Join-Path (Join-Path $base 'OneDrive - Contoso Ltd') 'Documents'      # spaces, as on a managed laptop
+$ps5      = Join-Path (Join-Path $docs 'WindowsPowerShell') 'profile.ps1'
+$ps7      = Join-Path (Join-Path $docs 'PowerShell') 'profile.ps1'
+$t = @(Get-ProfileTargets -AllHosts $ps5 -OnWindows $true -HasPowerShell7 $true)
+Check 'Windows PowerShell 5.1 with PowerShell 7 installed: both profiles, its own first' (($t.Count -eq 2) -and ($t[0] -eq $ps5) -and ($t[1] -eq $ps7)) ($t -join ' | ')
+$t = @(Get-ProfileTargets -AllHosts $ps5 -OnWindows $true -HasPowerShell7 $false)
+Check 'Windows PowerShell 5.1 alone: just its own profile'                              (($t.Count -eq 1) -and ($t[0] -eq $ps5)) ($t -join ' | ')
+$t = @(Get-ProfileTargets -AllHosts $ps7 -OnWindows $true -HasPowerShell7 $true)
+Check 'PowerShell 7: both profiles, its own first (5.1 is always there)'                 (($t.Count -eq 2) -and ($t[0] -eq $ps7) -and ($t[1] -eq $ps5)) ($t -join ' | ')
+$t = @(Get-ProfileTargets -AllHosts $ps7 -OnWindows $true -HasPowerShell7 $false)
+Check 'PowerShell 7 does not need to be told that it is installed'                       (($t.Count -eq 2) -and ($t[1] -eq $ps5)) ($t -join ' | ')
+$t = @(Get-ProfileTargets -AllHosts $ps7 -OnWindows $false -HasPowerShell7 $true)
+Check 'not on Windows: one edition, one profile'                                         (($t.Count -eq 1) -and ($t[0] -eq $ps7)) ($t -join ' | ')
+$odd = Join-Path (Join-Path $docs 'Somewhere') 'profile.ps1'
+$t = @(Get-ProfileTargets -AllHosts $odd -OnWindows $true -HasPowerShell7 $true)
+Check 'a profile folder it does not know is used alone'                                  (($t.Count -eq 1) -and ($t[0] -eq $odd)) ($t -join ' | ')
+$od5 = Join-Path (Join-Path $oneDrive 'WindowsPowerShell') 'profile.ps1'
+$t = @(Get-ProfileTargets -AllHosts $od5 -OnWindows $true -HasPowerShell7 $true)
+Check 'a redirected Documents folder with spaces in it works too'                        (($t.Count -eq 2) -and ($t[1] -eq (Join-Path (Join-Path $oneDrive 'PowerShell') 'profile.ps1'))) ($t -join ' | ')
+$lower = Join-Path (Join-Path $docs 'windowspowershell') 'profile.ps1'
+$t = @(Get-ProfileTargets -AllHosts $lower -OnWindows $true -HasPowerShell7 $true)
+Check 'folder names are matched without regard to case (Windows paths are)'               (($t.Count -eq 2) -and ($t[1] -eq $ps7)) ($t -join ' | ')
+
+$ps7Fn = $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Test-PowerShell7Installed' }, $true) | Select-Object -First 1
+Check 'setup.ps1 has Test-PowerShell7Installed' ($null -ne $ps7Fn)
+. ([scriptblock]::Create($ps7Fn.Extent.Text))
+Check 'Test-PowerShell7Installed answers yes or no and does not throw' ((Test-PowerShell7Installed) -is [bool])
+
 # ---- 1. first run, everything works -------------------------------------------------------------
 Write-Host ''
 Write-Host '-- first run'
@@ -401,6 +435,210 @@ $r = Invoke-Setup @('-SkipVerify', '-Login', '-ProfilePath', $prof) @{ DOCKER_FA
 $d = Show $r
 Check 'still exits 0 (the optional steps never fail the setup)' ($r.Code -eq 0) $d
 Check 'says the login did not finish'                   ($r.Text -match 'login did not finish') $d
+
+# ---- 8. which profiles get the line when no -ProfilePath is given ----------------------------------
+# On Windows the line goes into the all-hosts profile of this PowerShell and of the other one, because
+# VS Code and Windows Terminal often open the other one. On Linux and macOS, HOME / XDG_CONFIG_HOME move
+# the profile folder to a scratch place, and OS=Windows_NT for the child then makes setup.ps1 behave as it
+# does on Windows, with the PowerShell 7 folder (.../powershell) next to a WindowsPowerShell one. A real
+# Windows machine cannot be redirected, so there the real profile folders are used, and only on a GitHub
+# Actions runner (thrown away after the job); every file is put back afterwards.
+function Get-ImportLinesIn([string] $Path) {
+    if (-not (Test-Path -LiteralPath $Path)) { return @() }
+    return @(Get-Content -LiteralPath $Path | Where-Object { $_ -match '^\s*Import-Module\b.*Devtools\.psm1' })
+}
+
+# Invoke-Setup with some environment variables set for that run only.
+function Invoke-SetupWithEnv {
+    param([string[]] $Arguments = @(), [hashtable] $EnvVars = @{})
+    $prior = @{}
+    foreach ($k in @($EnvVars.Keys)) {
+        $prior[$k] = [Environment]::GetEnvironmentVariable($k)
+        [Environment]::SetEnvironmentVariable($k, [string] $EnvVars[$k])
+    }
+    try {
+        return Invoke-Setup $Arguments
+    } finally {
+        foreach ($k in @($prior.Keys)) { [Environment]::SetEnvironmentVariable($k, $prior[$k]) }
+    }
+}
+
+# Where a child PowerShell with these environment variables keeps its all-hosts profile.
+function Get-AllHostsProfile([hashtable] $EnvVars) {
+    $prior = @{}
+    foreach ($k in @($EnvVars.Keys)) {
+        $prior[$k] = [Environment]::GetEnvironmentVariable($k)
+        [Environment]::SetEnvironmentVariable($k, [string] $EnvVars[$k])
+    }
+    $psArgs = @('-NoProfile')
+    if ($isWin) { $psArgs += @('-ExecutionPolicy', 'Bypass') }
+    $psArgs += @('-Command', '$PROFILE.CurrentUserAllHosts')
+    $savedPref = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $lines = @(& $psExe @psArgs 2>&1 | ForEach-Object { "$_" })
+    } finally {
+        $ErrorActionPreference = $savedPref
+        foreach ($k in @($prior.Keys)) { [Environment]::SetEnvironmentVariable($k, $prior[$k]) }
+    }
+    return ("$(@($lines | Where-Object { $_.Trim().Length -gt 0 } | Select-Object -Last 1))").Trim()
+}
+
+$homeS    = Join-Path $base 'scratch home'
+$cfg      = Join-Path $homeS '.config'
+$redirect = @{ HOME = $homeS; USERPROFILE = $homeS; XDG_CONFIG_HOME = $cfg }
+New-Item -ItemType Directory -Force -Path $homeS | Out-Null
+$allHosts = Get-AllHostsProfile $redirect
+
+if ($allHosts.StartsWith($homeS, [StringComparison]::OrdinalIgnoreCase)) {
+    $dirOwn   = Split-Path -Parent $allHosts                          # .../powershell        (PowerShell 7)
+    $dirOther = Join-Path (Split-Path -Parent $dirOwn) 'WindowsPowerShell'
+    $fileOwn   = $allHosts
+    $fileOther = Join-Path $dirOther 'profile.ps1'
+    $asWindows = $redirect + @{ OS = 'Windows_NT' }
+
+    Write-Host ''
+    Write-Host '-- PowerShell 7 on Windows: both profiles get the line'
+    Reset-Project
+    Remove-Item -LiteralPath $cfg -Recurse -Force -ErrorAction SilentlyContinue
+    $r = Invoke-SetupWithEnv @('-SkipBuild', '-SkipVerify') $asWindows
+    $d = Show $r
+    $own = @(Get-ImportLinesIn $fileOwn); $other = @(Get-ImportLinesIn $fileOther)
+    Check 'exits 0'                                         ($r.Code -eq 0) $d
+    Check 'puts the line in its own all-hosts profile'      (($own.Count -eq 1) -and ($own[0] -ieq $expectedLine)) "$fileOwn : $($own -join ' | ')"
+    Check 'and in the Windows PowerShell 5.1 profile'       (($other.Count -eq 1) -and ($other[0] -ieq $expectedLine)) "$fileOther : $($other -join ' | ')"
+    Check 'reports both files'                              ([regex]::Matches($r.Text, '(?m)^  OK    added the Import-Module line to ').Count -eq 2) $d
+    Check 'explains why there are two'                      (($r.Text -match 'both were set up') -and ($r.Text -match 'VS Code')) $d
+    Check 'neither profile is treated as a problem'         (-not ($r.Text -match 'problem\(s\)') -and ($r.Text -match 'All set')) $d
+
+    Write-Host ''
+    Write-Host '-- and again: nothing is duplicated, nothing is rewritten'
+    $b1 = [Convert]::ToBase64String([IO.File]::ReadAllBytes($fileOwn)); $b2 = [Convert]::ToBase64String([IO.File]::ReadAllBytes($fileOther))
+    $r = Invoke-SetupWithEnv @('-SkipBuild', '-SkipVerify') $asWindows
+    $d = Show $r
+    Check 'exits 0'                                         ($r.Code -eq 0) $d
+    Check 'both files are byte for byte as they were'       (([Convert]::ToBase64String([IO.File]::ReadAllBytes($fileOwn)) -ceq $b1) -and ([Convert]::ToBase64String([IO.File]::ReadAllBytes($fileOther)) -ceq $b2)) $d
+    Check 'says both are already set up'                    ([regex]::Matches($r.Text, '(?m)^  OK    already set up in ').Count -eq 2) $d
+    Check 'writes no .bak'                                  (-not (Test-Path -LiteralPath "$fileOwn.bak") -and -not (Test-Path -LiteralPath "$fileOther.bak")) $d
+
+    Write-Host ''
+    Write-Host '-- the project moved: the old line is replaced in both'
+    Reset-Project
+    Remove-Item -LiteralPath $cfg -Recurse -Force -ErrorAction SilentlyContinue
+    New-Item -ItemType Directory -Force -Path $dirOwn, $dirOther | Out-Null
+    [IO.File]::WriteAllText($fileOwn,   "Set-Alias a1 Get-ChildItem`r`nImport-Module 'C:\old place\Devtools.psm1' -Force`r`n")
+    [IO.File]::WriteAllText($fileOther, "Set-Alias a2 Get-ChildItem`r`nImport-Module 'C:\old place\Devtools.psm1' -Force`r`n")
+    $r = Invoke-SetupWithEnv @('-SkipBuild', '-SkipVerify') $asWindows
+    $d = Show $r
+    $own = @(Get-ImportLinesIn $fileOwn); $other = @(Get-ImportLinesIn $fileOther)
+    Check 'exits 0'                                         ($r.Code -eq 0) $d
+    Check 'each file has exactly one line, the new one'     (($own.Count -eq 1) -and ($own[0] -ieq $expectedLine) -and ($other.Count -eq 1) -and ($other[0] -ieq $expectedLine)) "$($own -join ' | ') ## $($other -join ' | ')"
+    Check 'keeps the other lines of each file'              ((Read-Text $fileOwn).Contains('Set-Alias a1 ') -and (Read-Text $fileOther).Contains('Set-Alias a2 ')) $d
+    Check 'saves a .bak of each'                            ((Test-Path -LiteralPath "$fileOwn.bak") -and (Test-Path -LiteralPath "$fileOther.bak")) $d
+
+    Write-Host ''
+    Write-Host '-- the other PowerShell''s profile cannot be written'
+    Reset-Project
+    Remove-Item -LiteralPath $cfg -Recurse -Force -ErrorAction SilentlyContinue
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $dirOther) | Out-Null
+    [IO.File]::WriteAllText($dirOther, 'x')                 # a FILE where the profile folder should be
+    $r = Invoke-SetupWithEnv @('-SkipBuild', '-SkipVerify') $asWindows
+    $d = Show $r
+    $own = @(Get-ImportLinesIn $fileOwn)
+    Check 'still exits 0 (it is an extra, not the profile you ran setup in)' ($r.Code -eq 0) $d
+    Check 'warns and names the profile'                     (($r.Text -match '(?m)^  WARN  Could not update the profile of the other PowerShell') -and $r.Text.Contains($fileOther)) $d
+    Check 'tells you to add the line yourself if you use it' ($r.Text -match 'Add the same line there yourself') $d
+    Check 'its own profile is set up'                       (($own.Count -eq 1) -and ($own[0] -ieq $expectedLine)) $d
+    Check 'does not count it as a problem'                  (-not ($r.Text -match 'problem\(s\)') -and ($r.Text -match 'All set')) $d
+    Check 'does not claim that both were set up'            (-not ($r.Text -match 'both were set up')) $d
+
+    Write-Host ''
+    Write-Host '-- its own profile cannot be written, the other one can'
+    Reset-Project
+    Remove-Item -LiteralPath $cfg -Recurse -Force -ErrorAction SilentlyContinue
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $dirOwn) | Out-Null
+    [IO.File]::WriteAllText($dirOwn, 'x')
+    $r = Invoke-SetupWithEnv @('-SkipBuild', '-SkipVerify') $asWindows
+    $d = Show $r
+    $other = @(Get-ImportLinesIn $fileOther)
+    Check 'exits 2 (set up, but the profile you ran it in is not)' ($r.Code -eq 2) $d
+    Check 'says it could not update your profile'           ($r.Text -match '(?m)^  FAIL  Could not update your profile') $d
+    Check 'shows the line to add by hand'                   ($r.Text.Contains($expectedLine)) $d
+    Check 'still sets up the other one'                     (($other.Count -eq 1) -and ($other[0] -ieq $expectedLine)) $d
+
+    Write-Host ''
+    Write-Host '-- -ProfilePath names one file and only that one'
+    Reset-Project
+    Remove-Item -LiteralPath $cfg -Recurse -Force -ErrorAction SilentlyContinue
+    $r = Invoke-SetupWithEnv @('-SkipBuild', '-SkipVerify', '-ProfilePath', $prof) $asWindows
+    $d = Show $r
+    Check 'exits 0'                                         ($r.Code -eq 0) $d
+    Check 'writes the file you named'                       (@(Get-ImportLines).Count -eq 1) $d
+    Check 'touches no other profile'                        (-not (Test-Path -LiteralPath $fileOwn) -and -not (Test-Path -LiteralPath $dirOther)) $d
+    Check 'does not talk about a second PowerShell'         (-not ($r.Text -match 'both were set up')) $d
+
+    Write-Host ''
+    Write-Host '-- not Windows: one PowerShell, one profile'
+    Reset-Project
+    Remove-Item -LiteralPath $cfg -Recurse -Force -ErrorAction SilentlyContinue
+    $r = Invoke-SetupWithEnv @('-SkipBuild', '-SkipVerify') $redirect
+    $d = Show $r
+    $own = @(Get-ImportLinesIn $fileOwn)
+    Check 'exits 0'                                         ($r.Code -eq 0) $d
+    Check 'puts the line in its all-hosts profile'          (($own.Count -eq 1) -and ($own[0] -ieq $expectedLine)) $d
+    Check 'makes no second profile'                         (-not (Test-Path -LiteralPath $dirOther)) $d
+    Check 'does not talk about a second PowerShell'         (-not ($r.Text -match 'both were set up')) $d
+} elseif ($env:GITHUB_ACTIONS -eq 'true' -and $isWin) {
+    # A throw-away Windows machine with both PowerShells installed: use the real profile folders.
+    $real     = Get-AllHostsProfile @{}
+    $expected = @(Get-ProfileTargets -AllHosts $real -OnWindows $true -HasPowerShell7 (($PSVersionTable.PSEdition -eq 'Core') -or (Test-PowerShell7Installed)))
+    $dirCur   = Split-Path -Parent $real
+    $up       = Split-Path -Parent $dirCur
+    $watch    = @((Join-Path (Join-Path $up 'WindowsPowerShell') 'profile.ps1'), (Join-Path (Join-Path $up 'PowerShell') 'profile.ps1'))
+    $saved = @{}
+    $dirsBefore = @{}
+    foreach ($f in $watch) {
+        foreach ($p in @($f, "$f.bak")) {
+            if (Test-Path -LiteralPath $p) { $saved[$p] = [IO.File]::ReadAllBytes($p) }
+        }
+        $dirsBefore[(Split-Path -Parent $f)] = (Test-Path -LiteralPath (Split-Path -Parent $f))
+    }
+    try {
+        foreach ($f in $watch) { Remove-Item -LiteralPath $f, "$f.bak" -Force -ErrorAction SilentlyContinue }
+
+        Write-Host ''
+        Write-Host "-- this runner's real profile folders ($($PSVersionTable.PSEdition) PowerShell, $($expected.Count) profile(s) expected)"
+        Reset-Project
+        $r = Invoke-Setup @('-SkipBuild', '-SkipVerify')
+        $d = Show $r
+        Check 'exits 0'                                     ($r.Code -eq 0) $d
+        Check 'both PowerShells are expected on this runner' ($expected.Count -eq 2) ($expected -join ' | ')
+        foreach ($f in $expected) {
+            $lines = @(Get-ImportLinesIn $f)
+            $name  = (Split-Path -Leaf (Split-Path -Parent $f)) + '\' + (Split-Path -Leaf $f)
+            Check "puts the line in $name" (($lines.Count -eq 1) -and ($lines[0] -ieq $expectedLine)) "$f : $($lines -join ' | ')"
+        }
+        Check 'says that both were set up'                  (($expected.Count -lt 2) -or ($r.Text -match 'both were set up')) $d
+
+        $before = @{}
+        foreach ($f in $expected) { $before[$f] = [Convert]::ToBase64String([IO.File]::ReadAllBytes($f)) }
+        $r = Invoke-Setup @('-SkipBuild', '-SkipVerify')
+        $d = Show $r
+        Check 'a second run leaves every file as it was'    (($r.Code -eq 0) -and (@($expected | Where-Object { [Convert]::ToBase64String([IO.File]::ReadAllBytes($_)) -cne $before[$_] }).Count -eq 0)) $d
+    } finally {
+        foreach ($f in $watch) {
+            foreach ($p in @($f, "$f.bak")) {
+                if ($saved.ContainsKey($p)) { [IO.File]::WriteAllBytes($p, $saved[$p]) } else { Remove-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue }
+            }
+        }
+        foreach ($dir in @($dirsBefore.Keys)) {
+            if (-not $dirsBefore[$dir] -and (Test-Path -LiteralPath $dir) -and -not (Get-ChildItem -LiteralPath $dir -Force)) { Remove-Item -LiteralPath $dir -Force }
+        }
+    }
+} else {
+    Write-Host ''
+    Write-Host "SKIP  default profile locations: this PowerShell ignores HOME / USERPROFILE here ($allHosts), and this is not a throw-away runner"
+}
 
 # ---- done ---------------------------------------------------------------------------------------
 Set-Location $root

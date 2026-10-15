@@ -35,7 +35,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\setup.ps1
 2. creates `.env` from `.env.example` (an existing `.env` is kept)
 3. builds the image (`docker compose build`)
 4. adds the `Import-Module` line to your PowerShell profile (a line left over from a moved
-   folder is updated, and a `.bak` copy of the profile is saved first)
+   folder is updated, and a `.bak` copy of the profile is saved first). Windows PowerShell 5.1
+   and PowerShell 7 each keep a profile of their own, and the VS Code terminal often opens the
+   other one than the Start menu does, so on Windows both get the line: the PowerShell you ran
+   setup in, and the other one when it is installed
 5. loads the wrappers, the shortcuts, Tab completion and history suggestions (see
    [Shortcuts, history suggestions and Tab completion](#shortcuts-history-suggestions-and-tab-completion)),
    and makes `~/.devtools-aliases.ps1` for your own shortcuts (never overwritten)
@@ -54,12 +57,12 @@ to run again whenever you like: every step checks before it changes anything.
 | `-Login` | run `az login --use-device-code` at the end without asking |
 | `-ImportKube` | import Docker Desktop's Kubernetes context at the end without asking |
 | `-NoPrompt` | never ask a question (for automation) |
-| `-ProfilePath <file>` | edit this profile instead of your all-hosts profile |
+| `-ProfilePath <file>` | edit only this file, instead of the all-hosts profiles |
 
 Exit code: `0` all good, `1` setup could not finish, `2` setup finished but a tool check failed.
 
 That command runs the script in its own PowerShell process, so open a **new** PowerShell window
-afterwards: your profile loads the tools there. (If you start it from your own prompt as
+(or VS Code terminal) afterwards: your profile loads the tools there. (If you start it from your own prompt as
 `.\setup.ps1`, after `Set-ExecutionPolicy -Scope Process Bypass`, the tools are loaded in that
 window too.) If Group Policy blocks scripts altogether, or PowerShell runs in Constrained
 Language Mode, the wrappers cannot work there: build with `docker compose build` and use
@@ -102,6 +105,10 @@ Add (adjust the path to where this folder lives):
 ```powershell
 Import-Module 'C:\path\to\devtool\Devtools.psm1' -Force
 ```
+
+`$PROFILE` belongs to the PowerShell you typed that in. Windows PowerShell 5.1 and PowerShell 7
+keep separate profiles, so do the same in the other one if you use both (the VS Code terminal
+often opens PowerShell 7). `setup.ps1` does this for you.
 
 Reopen PowerShell. Now `az`, `kubectl`, `terraform`, etc. are the container
 versions. Because there's no local `az` on this machine, these functions simply
@@ -629,6 +636,8 @@ latest result). It runs three jobs:
     it has to handle: first run, second run, project folder moved, Docker not running, Windows
     containers, docker missing, wrong folder, build failure, no `docker compose`, a broken tool,
     and each option. It checks the exit code, the messages, the docker calls and the profile file.
+    It also covers which profiles get the line (Windows PowerShell 5.1 and PowerShell 7 each have
+    their own): both, one of them unwritable, and `-ProfilePath` touching only the file you name.
   - `tests/Test-Uninstall.ps1` does the same for `uninstall.ps1`, and also runs `setup.ps1` first
     to prove the profile comes back byte for byte as it was. It covers odd profile lines, a locked
     profile, wrappers loaded in the session, containers that will not go, a missing or stopped
@@ -756,6 +765,17 @@ Unblock-File 'C:\path\to\devtool\Devtools.psm1'     # needed if the folder came 
 ```
 If a Group Policy enforces the policy, PowerShell will refuse the change. The module can't load
 then; use `docker compose run --rm dev` instead, which gives you the same toolbox in a shell.
+
+**`az`, `kubectl` ... are "not recognized" in the VS Code terminal, but work in a PowerShell
+window.** The two are often different PowerShells: the Start menu opens Windows PowerShell 5.1,
+VS Code opens PowerShell 7 when it is installed, and each keeps its own profile. `setup.ps1`
+puts its line in both, so run it once more (`.\setup.ps1 -SkipBuild -SkipVerify`) and open a new
+terminal. `$PSVersionTable.PSVersion` tells you which PowerShell a terminal is, and
+`$PROFILE.CurrentUserAllHosts` is the file it reads. If setup says the line is already there and
+the tools are still missing, that terminal does not read its profile: look at
+`[Environment]::GetCommandLineArgs()` for `-NoProfile`, which a VS Code terminal profile can add
+to its `args`. Until then, `Import-Module 'C:\path\to\devtool\Devtools.psm1' -Force` loads the
+tools in the terminal you are in.
 
 **Garbled characters (`â€"`, `Γöé`, broken box lines) in Terraform or `gh` output.** Windows
 PowerShell decodes native output with the legacy console code page, but the container prints
