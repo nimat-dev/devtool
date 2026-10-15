@@ -491,16 +491,21 @@ New-Item -ItemType Directory -Force -Path $homeS | Out-Null
 $allHosts = Get-AllHostsProfile $redirect
 
 if ($allHosts.StartsWith($homeS, [StringComparison]::OrdinalIgnoreCase)) {
-    $dirOwn   = Split-Path -Parent $allHosts                          # .../powershell        (PowerShell 7)
-    $dirOther = Join-Path (Split-Path -Parent $dirOwn) 'WindowsPowerShell'
-    $fileOwn   = $allHosts
-    $fileOther = Join-Path $dirOther 'profile.ps1'
+    # The pair of profiles in the scratch home: on Linux .config/powershell and .config/WindowsPowerShell, on
+    # Windows Documents\PowerShell and Documents\WindowsPowerShell (or the other way round for 5.1).
+    $hasBoth = ($PSVersionTable.PSEdition -eq 'Core') -or (Test-PowerShell7Installed)
+    $pair    = @(Get-ProfileTargets -AllHosts $allHosts -OnWindows $true -HasPowerShell7 $hasBoth)
+    $fileOwn   = $pair[0]
+    $fileOther = if ($pair.Count -gt 1) { $pair[1] } else { Join-Path (Join-Path (Split-Path -Parent (Split-Path -Parent $allHosts)) 'Nowhere') 'profile.ps1' }
+    $dirOwn    = Split-Path -Parent $fileOwn
+    $dirOther  = Split-Path -Parent $fileOther
+    $profileRoot = Split-Path -Parent $dirOwn                         # what holds both folders; wiped between scenarios
     $asWindows = $redirect + @{ OS = 'Windows_NT' }
 
     Write-Host ''
     Write-Host '-- PowerShell 7 on Windows: both profiles get the line'
     Reset-Project
-    Remove-Item -LiteralPath $cfg -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $profileRoot -Recurse -Force -ErrorAction SilentlyContinue
     $r = Invoke-SetupWithEnv @('-SkipBuild', '-SkipVerify') $asWindows
     $d = Show $r
     $own = @(Get-ImportLinesIn $fileOwn); $other = @(Get-ImportLinesIn $fileOther)
@@ -524,7 +529,7 @@ if ($allHosts.StartsWith($homeS, [StringComparison]::OrdinalIgnoreCase)) {
     Write-Host ''
     Write-Host '-- the project moved: the old line is replaced in both'
     Reset-Project
-    Remove-Item -LiteralPath $cfg -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $profileRoot -Recurse -Force -ErrorAction SilentlyContinue
     New-Item -ItemType Directory -Force -Path $dirOwn, $dirOther | Out-Null
     [IO.File]::WriteAllText($fileOwn,   "Set-Alias a1 Get-ChildItem`r`nImport-Module 'C:\old place\Devtools.psm1' -Force`r`n")
     [IO.File]::WriteAllText($fileOther, "Set-Alias a2 Get-ChildItem`r`nImport-Module 'C:\old place\Devtools.psm1' -Force`r`n")
@@ -539,7 +544,7 @@ if ($allHosts.StartsWith($homeS, [StringComparison]::OrdinalIgnoreCase)) {
     Write-Host ''
     Write-Host '-- the other PowerShell''s profile cannot be written'
     Reset-Project
-    Remove-Item -LiteralPath $cfg -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $profileRoot -Recurse -Force -ErrorAction SilentlyContinue
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $dirOther) | Out-Null
     [IO.File]::WriteAllText($dirOther, 'x')                 # a FILE where the profile folder should be
     $r = Invoke-SetupWithEnv @('-SkipBuild', '-SkipVerify') $asWindows
@@ -555,7 +560,7 @@ if ($allHosts.StartsWith($homeS, [StringComparison]::OrdinalIgnoreCase)) {
     Write-Host ''
     Write-Host '-- its own profile cannot be written, the other one can'
     Reset-Project
-    Remove-Item -LiteralPath $cfg -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $profileRoot -Recurse -Force -ErrorAction SilentlyContinue
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $dirOwn) | Out-Null
     [IO.File]::WriteAllText($dirOwn, 'x')
     $r = Invoke-SetupWithEnv @('-SkipBuild', '-SkipVerify') $asWindows
@@ -569,7 +574,7 @@ if ($allHosts.StartsWith($homeS, [StringComparison]::OrdinalIgnoreCase)) {
     Write-Host ''
     Write-Host '-- -ProfilePath names one file and only that one'
     Reset-Project
-    Remove-Item -LiteralPath $cfg -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $profileRoot -Recurse -Force -ErrorAction SilentlyContinue
     $r = Invoke-SetupWithEnv @('-SkipBuild', '-SkipVerify', '-ProfilePath', $prof) $asWindows
     $d = Show $r
     Check 'exits 0'                                         ($r.Code -eq 0) $d
@@ -577,10 +582,11 @@ if ($allHosts.StartsWith($homeS, [StringComparison]::OrdinalIgnoreCase)) {
     Check 'touches no other profile'                        (-not (Test-Path -LiteralPath $fileOwn) -and -not (Test-Path -LiteralPath $dirOther)) $d
     Check 'does not talk about a second PowerShell'         (-not ($r.Text -match 'both were set up')) $d
 
+    if (-not $isWin) {
     Write-Host ''
     Write-Host '-- not Windows: one PowerShell, one profile'
     Reset-Project
-    Remove-Item -LiteralPath $cfg -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $profileRoot -Recurse -Force -ErrorAction SilentlyContinue
     $r = Invoke-SetupWithEnv @('-SkipBuild', '-SkipVerify') $redirect
     $d = Show $r
     $own = @(Get-ImportLinesIn $fileOwn)
@@ -588,6 +594,7 @@ if ($allHosts.StartsWith($homeS, [StringComparison]::OrdinalIgnoreCase)) {
     Check 'puts the line in its all-hosts profile'          (($own.Count -eq 1) -and ($own[0] -ieq $expectedLine)) $d
     Check 'makes no second profile'                         (-not (Test-Path -LiteralPath $dirOther)) $d
     Check 'does not talk about a second PowerShell'         (-not ($r.Text -match 'both were set up')) $d
+    }
 } elseif ($env:GITHUB_ACTIONS -eq 'true' -and $isWin) {
     # A throw-away Windows machine with both PowerShells installed: use the real profile folders.
     $real     = Get-AllHostsProfile @{}
