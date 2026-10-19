@@ -67,6 +67,18 @@ RUN if ls -A /usr/local/share/ca-certificates/extra/*.crt >/dev/null 2>&1; then 
     fi
 
 # ---------------------------------------------------------------------------
+# Docker CLI (client only — talks to the host daemon via the mounted socket).
+# Needed so `az acr login` can call `docker login` inside the container.
+# ---------------------------------------------------------------------------
+RUN curl -fsSL https://download.docker.com/linux/debian/gpg \
+      | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg \
+ && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/debian $(lsb_release -cs) stable" \
+      > /etc/apt/sources.list.d/docker.list \
+ && DEBIAN_FRONTEND=noninteractive apt-get update \
+ && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends docker-ce-cli \
+ && rm -rf /var/lib/apt/lists/*
+
+# ---------------------------------------------------------------------------
 # Azure CLI (Microsoft apt repo). Optional pin via AZURE_CLI_VERSION.
 # DL3008 ignored: version is pinned conditionally via ARG, else latest.
 # ---------------------------------------------------------------------------
@@ -198,6 +210,15 @@ RUN curl -fsSLo /tmp/gh.tar.gz "https://github.com/cli/cli/releases/download/v${
  && gh --version
 
 # ---------------------------------------------------------------------------
+# helmfile (declarative Helm releases). GitHub release tarball. Pinned via HELMFILE_VERSION.
+# ---------------------------------------------------------------------------
+ARG HELMFILE_VERSION=0.169.2
+RUN curl -fsSLo /tmp/helmfile.tar.gz "https://github.com/helmfile/helmfile/releases/download/v${HELMFILE_VERSION}/helmfile_${HELMFILE_VERSION}_linux_amd64.tar.gz" \
+ && tar -xzf /tmp/helmfile.tar.gz -C /usr/local/bin helmfile \
+ && rm -f /tmp/helmfile.tar.gz \
+ && helmfile --version
+
+# ---------------------------------------------------------------------------
 # Shell env: persist Terraform's provider plugin cache on the mounted /root
 # volume so `terraform init` doesn't re-download providers every run.
 # ---------------------------------------------------------------------------
@@ -278,7 +299,7 @@ RUN sed -i 's/\r$//' /etc/devtools/* /usr/local/bin/devtools-complete \
  && mv /etc/devtools/zshrc /etc/devtools/zdot/.zshrc \
  && export AZD_SKIP_UPDATE_CHECK=1 \
  && printf '\n# DevOps toolbox: aliases, history and Tab completion\nif [ -r /etc/devtools/bashrc ]; then . /etc/devtools/bashrc; fi\n' >> /etc/bash.bashrc \
- && for t in kubectl helm flux kustomize azd; do \
+ && for t in kubectl helm flux kustomize azd helmfile; do \
       { "$t" completion bash > "/usr/share/bash-completion/completions/$t" \
         && "$t" completion zsh > "/usr/share/zsh/vendor-completions/_$t"; } \
       || { echo "WARNING: could not generate shell completion for $t"; \

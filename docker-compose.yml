@@ -36,6 +36,9 @@ services:
       # Corporate CA certs (optional). Drop *.crt files into ./certs and they
       # are trusted at startup — no rebuild needed.
       - ./certs:/extra-certs:ro
+      # Docker socket: lets `az acr login` (and docker CLI) talk to the host
+      # Docker daemon so image push/pull works from inside the container.
+      - /var/run/docker.sock:/var/run/docker.sock
     working_dir: /repos
     environment:
       # Optional, for the aksc / aksup / aksx shortcuts: the resource group and name of your AKS
