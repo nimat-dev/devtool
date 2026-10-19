@@ -14,5 +14,13 @@ NO_PROXY="${NO_PROXY:+$NO_PROXY,}$extra"
 no_proxy="${no_proxy:+$no_proxy,}$extra"
 export NO_PROXY no_proxy
 
+# Trust any *.crt files mounted into /extra-certs at runtime (corporate CA support).
+# Lets `az acr login` and all other TLS tools work behind SSL-inspecting proxies
+# without baking the cert into the image layer.
+if ls /extra-certs/*.crt >/dev/null 2>&1; then
+    cp /extra-certs/*.crt /usr/local/share/ca-certificates/
+    update-ca-certificates --fresh >/dev/null 2>&1
+fi
+
 [ "$#" -gt 0 ] || set -- bash
 exec "$@"

@@ -33,6 +33,9 @@ services:
       # Your code. Set REPOS_ROOT in .env to an absolute path to mount real repos;
       # defaults to the ./repos folder in this project so it works out of the box.
       - ${REPOS_ROOT:-./repos}:/repos
+      # Corporate CA certs (optional). Drop *.crt files into ./certs and they
+      # are trusted at startup — no rebuild needed.
+      - ./certs:/extra-certs:ro
     working_dir: /repos
     environment:
       # Optional, for the aksc / aksup / aksx shortcuts: the resource group and name of your AKS
